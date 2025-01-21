@@ -15,7 +15,7 @@ def simple_network_test():
 
 
 def two_neuron_depression():
-    connections = np.array([[0.0, 0.0], [2.0, 0.0]])
+    connections = np.array([[0.0, 0.0], [1.5, 0.0]])
     mask = np.array([[0, 0], [1, 0]])
     network = n.IzhNet(n.RSParams(2, False), connections, True, mask)
     voltage1 = []
@@ -26,10 +26,10 @@ def two_neuron_depression():
     d2 = []
     stdp = l.SimpleSTDP(network, .004, -.004, 15, 20, max_e=2.0)
     for t in range(2000):
-        if 25 < t % 200 < 35:
+        if 25 < t % 200 < 30:
             input_v = np.array([0.0, 12.0])
 
-        elif 40 < t % 100 < 50:
+        elif 35 < t % 100 < 40:
             input_v = np.array([12.0, 0.0])
 
         else:
