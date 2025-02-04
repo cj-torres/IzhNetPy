@@ -14,7 +14,6 @@ DEFAULT_TAU_D = 150
 class IzhParams:
     """
     Parameters for Izhikevich networks
-    TODO: build functions which return parameterizations
     """
     def __init__(self, a: GenArray, b: GenArray, c: GenArray, d: GenArray, inhibitory: GenArray,
                  U: GenArray, F: GenArray, D: GenArray):
@@ -210,7 +209,100 @@ class SimpleInhibitoryParams(IzhParams):
         super().__init__(a, b, c, d, inhibitory, U, F, D)
 
 
+
 class IzhNet:
+    """
+    Base class for Izhikevich Networks
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, input_voltages, input_network):
+        self.step(input_voltages, input_network)
+
+    def step(self, input_voltages, input_network):
+        raise NotImplemented
+
+
+class InputPopulation(IzhNet):
+    '''
+    Technically not an Izhikevich network
+    '''
+    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, fire_rate: float):
+        super().__init__()
+        if is_cuda:
+            dev = cp
+        else:
+            dev = np
+
+        self.device = "cuda" if is_cuda else "cpu"
+
+        self.inhibitory = dev.concatenate([dev.zeros(num_excitatory),
+                                           dev.ones(num_inhibitory)], axis=0)
+
+        self.U = dev.concatenate([dev.full(num_excitatory, .5),
+                                  dev.full(num_inhibitory, 0.2)], axis=0)
+        self.F = dev.concatenate([dev.full(num_excitatory, 1000.0),
+                                  dev.full(num_inhibitory, 20.0)], axis=0)
+        self.D = dev.concatenate([dev.full(num_excitatory, 800.0),
+                                  dev.full(num_inhibitory, 700.0)], axis=0)
+        self.R = dev.zeros_like(self.U)
+        self.w = dev.zeros_like(self.U)
+        self.fire_rate = fire_rate
+        self.fired = dev.zeros_like(self.U)
+
+    def step(self, input=None, network=None):
+        if self.device == "cuda":
+            dev = cp
+        else:
+            dev = np
+        self.fired = dev.random.rand(self.inhibitory.size) < self.fire_rate
+        self.facilitation_update()
+
+
+    def is_cuda(self, is_cuda: bool):
+        """
+        Switches device for network
+        :param is_cuda: whether network is on cuda device
+        :return: None
+        """
+
+        if is_cuda:
+            self.device = 'cuda'
+            self.fired = cp.array(self.fired)
+            self.inhibitory = cp.array(self.inhibitory)
+            self.U = cp.array(self.U)
+            self.F = cp.array(self.F)
+            self.D = cp.array(self.D)
+            self.R = cp.array(self.R)
+            self.w = cp.array(self.w)
+
+        else:
+            self.device = 'cpu'
+            self.fired = cp.asnumpy(self.fired)
+            self.inhibitory = cp.asnumpy(self.inhibitory)
+            self.U = cp.asnumpy(self.U)
+            self.F = cp.asnumpy(self.F)
+            self.D = cp.asnumpy(self.D)
+            self.R = cp.asnumpy(self.R)
+            self.w = cp.asnumpy(self.w)
+
+    def set_rate(self, fire_rate: float):
+        self.fire_rate = fire_rate
+
+    def get_output(self, indices):
+        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
+
+    def facilitation_update(self):
+        """
+        :return:
+        """
+        self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
+        self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
+
+
+class RecurrentIzhNet(IzhNet):
     """
     An Izhikevich network
     """
@@ -221,6 +313,8 @@ class IzhNet:
             self.device = 'cuda'
         else:
             self.device = 'cpu'
+
+        super().__init__()
 
         assert type(params.a) == type(connections)
 
@@ -268,7 +362,7 @@ class IzhNet:
         self.R = dev.zeros_like(self.a)
         self.w = dev.zeros_like(self.a)
 
-    def step(self, input_voltages: GenArray):
+    def step(self, input_voltages: GenArray, inhibitory: GenArray):
         assert isinstance(input_voltages, type(self.v))
         self.v = self.v
         self.fired = self.v >= 30
@@ -287,11 +381,11 @@ class IzhNet:
         self.u = self.u + self.a * (self.b * self.v - self.u)
 
         if self.conductive:
-            self.conductance_update()
+            self.conductance_update(input_voltages, inhibitory)
             self.facilitation_update()
 
-    def __call__(self, input_voltages: np.ndarray):
-        self.step(input_voltages)
+    def __call__(self, input_voltages: np.ndarray, inhibitory: GenArray):
+        self.step(input_voltages, inhibitory)
 
     def is_cuda(self, is_cuda: bool):
         """
@@ -307,12 +401,19 @@ class IzhNet:
             self.c = cp.array(self.c)
             self.d = cp.array(self.d)
             self.fired = cp.array(self.fired)
+            self.inhibitory = cp.array(self.inhibitory)
             self.v = cp.array(self.v)
             self.u = cp.array(self.u)
             self.U = cp.array(self.U)
             self.F = cp.array(self.F)
             self.D = cp.array(self.D)
             self.connections = cp.array(self.connections)
+            self.R = cp.array(self.R)
+            self.w = cp.array(self.w)
+            self.g_a = cp.array(self.g_a)
+            self.g_b = cp.array(self.g_b)
+            self.g_c = cp.array(self.g_c)
+            self.g_d = cp.array(self.g_d)
         else:
             self.device = 'cpu'
             self.a = cp.asnumpy(self.a)
@@ -320,12 +421,19 @@ class IzhNet:
             self.c = cp.asnumpy(self.c)
             self.d = cp.asnumpy(self.d)
             self.fired = cp.asnumpy(self.fired)
+            self.inhibitory = cp.asnumpy(self.inhibitory)
             self.v = cp.asnumpy(self.v)
             self.u = cp.asnumpy(self.u)
             self.U = cp.asnumpy(self.U)
             self.F = cp.asnumpy(self.F)
             self.D = cp.asnumpy(self.D)
             self.connections = cp.asnumpy(self.connections)
+            self.R = cp.asnumpy(self.R)
+            self.w = cp.asnumpy(self.w)
+            self.g_a = cp.asnumpy(self.g_a)
+            self.g_b = cp.asnumpy(self.g_b)
+            self.g_c = cp.asnumpy(self.g_c)
+            self.g_d = cp.asnumpy(self.g_d)
 
     # Conductance functions
 
@@ -339,17 +447,20 @@ class IzhNet:
         d_term = self.g_d*(self.v+90)
         return a_term + b_term + c_term + d_term
 
-    def conductance_update(self):
+    def conductance_update(self, input_voltages: GenArray, inhibitory: GenArray):
         """
         :return:
         """
-        self.g_a = self.g_a + self.connections @ (
+        inhibitory_input = input_voltages * inhibitory
+        excitatory_input = input_voltages * (inhibitory == 0)
+
+        self.g_a = self.g_a + excitatory_input + self.connections @ (
                 self.R * self.w * self.fired * (self.inhibitory == 0)) - self.g_a / self.tau_a
-        self.g_b = self.g_b + self.connections @ (
+        self.g_b = self.g_b + excitatory_input + self.connections @ (
                 self.R * self.w * self.fired * (self.inhibitory == 0)) - self.g_b / self.tau_b
-        self.g_c = self.g_c + self.connections @ (
+        self.g_c = self.g_c + inhibitory_input + self.connections @ (
                 self.R * self.w * self.fired * self.inhibitory) - self.g_c / self.tau_c
-        self.g_d = self.g_d + self.connections @ (
+        self.g_d = self.g_d + inhibitory_input + self.connections @ (
                 self.R * self.w * self.fired * self.inhibitory) - self.g_d / self.tau_d
 
     def facilitation_update(self):
@@ -359,8 +470,11 @@ class IzhNet:
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
 
+    def get_output(self, indices: GenArray):
+        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
 
-class SimpleNetwork(IzhNet):
+
+class SimpleNetwork(RecurrentIzhNet):
     def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, conductive: bool):
         if is_cuda:
             dev = cp
@@ -372,3 +486,9 @@ class SimpleNetwork(IzhNet):
                                        -1*dev.random.rand(total, num_inhibitory)],  # Inhibitory connections
                                       axis=1)
         super().__init__(params, connections, conductive)
+
+
+class DecisionNet(IzhNet):
+    def __init__(self, n_outputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool):
+        super().__init__()
+        self.populations = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive) for _ in range(n_outputs)]
