@@ -209,23 +209,64 @@ class SimpleInhibitoryParams(IzhParams):
         super().__init__(a, b, c, d, inhibitory, U, F, D)
 
 
+class InputParams:
+    '''
+    A class for Poisson input groups
+    '''
+    def __init__(self,  inhibitory: GenArray, U: GenArray, F: GenArray, D: GenArray):
+        self.U = U
+        self.F = F
+        self.D = D
+        self.inhibitory = inhibitory
 
-class IzhNet:
-    """
-    Base class for Izhikevich Networks
-    """
+    def __add__(self, other: "InputParams"):
+        """
+        :param other: Another IzhParams object
+        :return: concatenation of all IzhParam parameters as new IzhParams object
+        """
+        assert type(self.a) == type(other.a) and isinstance(self.a, GenArray)
+        if isinstance(self.a, cp.ndarray):
+            dev = cp
+        else:
+            dev = np
+        new_inhibitory = dev.concatenate([self.inhibitory, other.inhibitory])
+        new_U = dev.concatenate([self.U, other.U])
+        new_F = dev.concatenate([self.F, other.F])
+        new_D = dev.concatenate([self.D, other.D])
 
+        return InputParams(new_inhibitory, new_U, new_F, new_D)
+
+
+class SimpleExcitatoryInputParams(InputParams):
+    def __init__(self, length: int, is_cuda: bool):
+        if is_cuda:
+            dev = cp
+        else:
+            dev = np
+        inhibitory = dev.full(length, False)
+        U = dev.full(length, .5)
+        F = dev.full(length, 1000.0)
+        D = dev.full(length, 800.0)
+        super().__init__(inhibitory, U, F, D)
+
+
+class SimpleInhibitoryInputParams(InputParams):
+    def __init__(self, length: int, is_cuda: bool):
+        if is_cuda:
+            dev = cp
+        else:
+            dev = np
+        inhibitory = dev.full(length, True)
+        U = dev.full(length, 0.2)
+        F = dev.full(length, 20.0)
+        D = dev.full(length, 700.0)
+        super().__init__(inhibitory, U, F, D)
+
+
+class NeuronPopulation:
     def __init__(self):
         self.parameters = []
-        self.firing_populations = {}
-        self.population_connections = {}
         self.device = 'cpu'
-
-    def __call__(self, input_voltages, input_network):
-        self.step(input_voltages, input_network)
-
-    def step(self, input_voltages, input_network):
-        raise NotImplemented
 
     def is_cuda(self, is_cuda: bool):
         """
@@ -246,80 +287,39 @@ class IzhNet:
                     arr = cp.asnumpy(arr)
             setattr(self, param_name, arr)
 
+    def __call__(self, *args, **kwargs):
+        self.step(*args, **kwargs)
 
-    def add_population(self, firing_pop: GenArray):
+    def step(self, *args, **kwargs):
+        raise NotImplemented
 
-    def add_connection(self, connection: tuple[int]):
-
-
-
-class InputPopulation(IzhNet):
-    '''
-    Technically not an Izhikevich network
-    '''
-    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, fire_rate: float):
-        super().__init__()
+class InputPopulation(NeuronPopulation):
+    def __init__(self, params: InputParams, is_cuda: bool):
         if is_cuda:
             dev = cp
         else:
             dev = np
 
+        super().__init__()
+
         self.device = "cuda" if is_cuda else "cpu"
 
-        self.inhibitory = dev.concatenate([dev.zeros(num_excitatory),
-                                           dev.ones(num_inhibitory)], axis=0)
+        self.inhibitory = params.inhibitory
 
         self.parameters.append('inhibitory')
 
-        self.U = dev.concatenate([dev.full(num_excitatory, .5),
-                                  dev.full(num_inhibitory, 0.2)], axis=0)
+        self.U = params.U
         self.parameters.append('U')
-        self.F = dev.concatenate([dev.full(num_excitatory, 1000.0),
-                                  dev.full(num_inhibitory, 20.0)], axis=0)
+        self.F = params.F
         self.parameters.append('F')
-        self.D = dev.concatenate([dev.full(num_excitatory, 800.0),
-                                  dev.full(num_inhibitory, 700.0)], axis=0)
+        self.D = params.D
         self.parameters.append('D')
         self.R = dev.zeros_like(self.U)
         self.parameters.append('R')
         self.w = dev.zeros_like(self.U)
         self.parameters.append('w')
-        self.fire_rate = fire_rate
         self.fired = dev.zeros_like(self.U)
         self.parameters.append('fired')
-
-    def step(self, input=None, network=None):
-        if self.device == "cuda":
-            dev = cp
-        else:
-            dev = np
-        self.fired = dev.random.rand(self.inhibitory.size) < self.fire_rate
-        self.facilitation_update()
-
-    def is_cuda(self, is_cuda: bool):
-        """
-        Switches device for network
-        :param is_cuda: whether network is on cuda device
-        :return: None
-        """
-        self.device = 'cuda' if is_cuda else 'cpu'
-        for param_name in self.parameters:
-            arr = getattr(self, param_name)  # get the attribute
-            if self.device == 'cuda':
-                # move to GPU (cupy)
-                if not isinstance(arr, cp.ndarray):
-                    arr = cp.asarray(arr)
-            else:
-                # move to CPU (numpy)
-                if not isinstance(arr, np.ndarray):
-                    arr = cp.asnumpy(arr)
-            setattr(self, param_name, arr)
-
-    def set_rate(self, fire_rate: float):
-        self.fire_rate = fire_rate
-
-    def get_output(self, indices):
-        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
 
     def facilitation_update(self):
         """
@@ -328,12 +328,27 @@ class InputPopulation(IzhNet):
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
 
+    def get_output(self, indices):
+        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
 
-class RecurrentIzhNet(IzhNet):
-    """
-    An Izhikevich network
-    """
-    def __init__(self, params: IzhParams, connections: GenArray, conductive: bool, mask: Optional[GenArray] = None,
+    def step(self, fire_rate: float):
+        if self.device == "cuda":
+            dev = cp
+        else:
+            dev = np
+        self.fired = dev.random.rand(self.inhibitory.size) < fire_rate
+        self.facilitation_update()
+
+
+class SimpleInput(InputPopulation):
+    def __init__(self, n_excitatory: int, n_inhibitory: int, is_cuda: bool):
+        input_params = (SimpleExcitatoryInputParams(n_excitatory, is_cuda) +
+                        SimpleInhibitoryInputParams(n_inhibitory, is_cuda))
+        super().__init__(input_params, is_cuda)
+
+
+class IzhPopulation(NeuronPopulation):
+    def __init__(self, params: IzhParams, conductive: bool,
                  tau_a: float = DEFAULT_TAU_A, tau_b: float = DEFAULT_TAU_B,
                  tau_c: float = DEFAULT_TAU_C, tau_d: float = DEFAULT_TAU_D):
         if type(params.a) == cp.ndarray:
@@ -342,8 +357,6 @@ class RecurrentIzhNet(IzhNet):
             self.device = 'cpu'
 
         super().__init__()
-
-        assert type(params.a) == type(connections)
 
         # standard params
         self.a = params.a
@@ -374,22 +387,12 @@ class RecurrentIzhNet(IzhNet):
         self.parameters.append('tau_c')
         self.tau_d = tau_d
         self.parameters.append('tau_d')
-        self.connections = connections
-        self.parameters.append('connections')
         self.conductive = conductive
 
         if self.device == 'cuda':
             dev = cp
         else:
             dev = np
-
-        if mask is None:
-            self.mask = dev.ones_like(self.connections)
-        else:
-            self.mask = mask
-
-        self.parameters.append('mask')
-        self.connections *= self.connections * self.mask
 
         self.fired = dev.zeros_like(self.a).astype(bool)
         self.parameters.append('fired')
@@ -412,17 +415,18 @@ class RecurrentIzhNet(IzhNet):
         self.w = dev.zeros_like(self.a)
         self.parameters.append('w')
 
-    def step(self, input_voltages: GenArray, inhibitory: GenArray):
-        assert isinstance(input_voltages, type(self.v))
+    def step(self, excitatory_input: GenArray, inhibitory_input: GenArray):
+        assert isinstance(excitatory_input, type(self.v))
+        assert isinstance(inhibitory_input, type(self.v))
         self.v = self.v
         self.fired = self.v >= 30
         self.v[self.fired] = self.c[self.fired]
         self.u[self.fired] = self.u[self.fired] + self.d[self.fired]
 
         if self.conductive:
-            input_voltages = input_voltages - self.synaptic_current()
+            input_voltages = self.synaptic_current()
         else:
-            input_voltages = input_voltages + self.connections @ self.fired
+            input_voltages = excitatory_input + inhibitory_input
 
         self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u + input_voltages)
         self.v = self.v.clip(max=30)
@@ -431,70 +435,17 @@ class RecurrentIzhNet(IzhNet):
         self.u = self.u + self.a * (self.b * self.v - self.u)
 
         if self.conductive:
-            self.conductance_update(input_voltages, inhibitory)
+            self.conductance_update(excitatory_input, inhibitory_input)
             self.facilitation_update()
-
-    def __call__(self, input_voltages: np.ndarray, inhibitory: GenArray):
-        self.step(input_voltages, inhibitory)
-
-    # def is_cuda(self, is_cuda: bool):
-    #     """
-    #     Switches device for network
-    #     :param is_cuda: whether network is on cuda device
-    #     :return: None
-    #     """
-    #
-    #     if is_cuda:
-    #         self.device = 'cuda'
-    #         self.a = cp.array(self.a)
-    #         self.b = cp.array(self.b)
-    #         self.c = cp.array(self.c)
-    #         self.d = cp.array(self.d)
-    #         self.fired = cp.array(self.fired)
-    #         self.inhibitory = cp.array(self.inhibitory)
-    #         self.v = cp.array(self.v)
-    #         self.u = cp.array(self.u)
-    #         self.U = cp.array(self.U)
-    #         self.F = cp.array(self.F)
-    #         self.D = cp.array(self.D)
-    #         self.connections = cp.array(self.connections)
-    #         self.R = cp.array(self.R)
-    #         self.w = cp.array(self.w)
-    #         self.g_a = cp.array(self.g_a)
-    #         self.g_b = cp.array(self.g_b)
-    #         self.g_c = cp.array(self.g_c)
-    #         self.g_d = cp.array(self.g_d)
-    #     else:
-    #         self.device = 'cpu'
-    #         self.a = cp.asnumpy(self.a)
-    #         self.b = cp.asnumpy(self.b)
-    #         self.c = cp.asnumpy(self.c)
-    #         self.d = cp.asnumpy(self.d)
-    #         self.fired = cp.asnumpy(self.fired)
-    #         self.inhibitory = cp.asnumpy(self.inhibitory)
-    #         self.v = cp.asnumpy(self.v)
-    #         self.u = cp.asnumpy(self.u)
-    #         self.U = cp.asnumpy(self.U)
-    #         self.F = cp.asnumpy(self.F)
-    #         self.D = cp.asnumpy(self.D)
-    #         self.connections = cp.asnumpy(self.connections)
-    #         self.R = cp.asnumpy(self.R)
-    #         self.w = cp.asnumpy(self.w)
-    #         self.g_a = cp.asnumpy(self.g_a)
-    #         self.g_b = cp.asnumpy(self.g_b)
-    #         self.g_c = cp.asnumpy(self.g_c)
-    #         self.g_d = cp.asnumpy(self.g_d)
-
-    # Conductance functions
 
     def synaptic_current(self):
         """
         :return:
         """
         a_term = self.g_a * self.v
-        b_term = self.g_b * (((self.v + 80) / 60)**2) / (1 + (((self.v + 80) / 60)**2)) * self.v
-        c_term = self.g_c*(self.v+70)
-        d_term = self.g_d*(self.v+90)
+        b_term = self.g_b * (((self.v + 80) / 60) ** 2) / (1 + (((self.v + 80) / 60) ** 2)) * self.v
+        c_term = self.g_c * (self.v + 70)
+        d_term = self.g_d * (self.v + 90)
         return a_term + b_term + c_term + d_term
 
     def conductance_update(self, excitatory_input: GenArray, inhibitory_input: GenArray):
@@ -502,14 +453,10 @@ class RecurrentIzhNet(IzhNet):
         :return:
         """
 
-        self.g_a = self.g_a + excitatory_input + self.connections @ (
-                self.R * self.w * self.fired * (self.inhibitory == 0)) - self.g_a / self.tau_a
-        self.g_b = self.g_b + excitatory_input + self.connections @ (
-                self.R * self.w * self.fired * (self.inhibitory == 0)) - self.g_b / self.tau_b
-        self.g_c = self.g_c + inhibitory_input + self.connections @ (
-                self.R * self.w * self.fired * self.inhibitory) - self.g_c / self.tau_c
-        self.g_d = self.g_d + inhibitory_input + self.connections @ (
-                self.R * self.w * self.fired * self.inhibitory) - self.g_d / self.tau_d
+        self.g_a = self.g_a + excitatory_input - self.g_a / self.tau_a
+        self.g_b = self.g_b + excitatory_input - self.g_b / self.tau_b
+        self.g_c = self.g_c + inhibitory_input - self.g_c / self.tau_c
+        self.g_d = self.g_d + inhibitory_input - self.g_d / self.tau_d
 
     def facilitation_update(self):
         """
@@ -520,23 +467,3 @@ class RecurrentIzhNet(IzhNet):
 
     def get_output(self, indices: GenArray):
         return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
-
-
-class SimpleNetwork(RecurrentIzhNet):
-    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, conductive: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        params = SimpleExcitatoryParams(num_excitatory, is_cuda) + SimpleInhibitoryParams(num_inhibitory, is_cuda)
-        total = num_inhibitory + num_excitatory
-        connections = dev.concatenate([.5*dev.random.rand(total, num_excitatory),   # Excitatory connections
-                                       -1*dev.random.rand(total, num_inhibitory)],  # Inhibitory connections
-                                      axis=1)
-        super().__init__(params, connections, conductive)
-
-
-class DecisionNet(IzhNet):
-    def __init__(self, n_outputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool):
-        super().__init__()
-        self.populations = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive) for _ in range(n_outputs)]
