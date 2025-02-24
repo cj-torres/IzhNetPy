@@ -293,8 +293,12 @@ class NeuronPopulation:
     def step(self, *args, **kwargs):
         raise NotImplemented
 
+    def get_output(self):
+        raise NotImplemented
+
+
 class InputPopulation(NeuronPopulation):
-    def __init__(self, params: InputParams, is_cuda: bool):
+    def __init__(self, params: InputParams, is_cuda: bool, conductive: bool):
         if is_cuda:
             dev = cp
         else:
@@ -303,6 +307,7 @@ class InputPopulation(NeuronPopulation):
         super().__init__()
 
         self.device = "cuda" if is_cuda else "cpu"
+        self.conductive = conductive
 
         self.inhibitory = params.inhibitory
 
@@ -328,8 +333,11 @@ class InputPopulation(NeuronPopulation):
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
 
-    def get_output(self, indices):
-        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
+    def get_output(self):
+        if self.conductive:
+            return (self.fired * self.w * self.R), self.inhibitory
+        else:
+            return self.fired, self.inhibitory
 
     def step(self, fire_rate: float):
         if self.device == "cuda":
@@ -338,6 +346,7 @@ class InputPopulation(NeuronPopulation):
             dev = np
         self.fired = dev.random.rand(self.inhibitory.size) < fire_rate
         self.facilitation_update()
+        return self.get_output()
 
 
 class SimpleInput(InputPopulation):
@@ -465,5 +474,8 @@ class IzhPopulation(NeuronPopulation):
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
 
-    def get_output(self, indices: GenArray):
-        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
+    def get_output(self):
+        if self.conductive:
+            return (self.fired * self.w * self.R), self.inhibitory
+        else:
+            return self.fired, self.inhibitory

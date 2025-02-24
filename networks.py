@@ -1,213 +1,39 @@
 import numpy as np
 import cupy as cp
 from typing import Union, Optional
+import neurons as nu
 
 GenArray = Union[cp.ndarray, np.ndarray]  # used repeatedly throughout code
 
-# From Izhikevich et al. 2004
-DEFAULT_TAU_A = 5
-DEFAULT_TAU_B = 150
-DEFAULT_TAU_C = 6
-DEFAULT_TAU_D = 150
 
-
-class IzhParams:
-    """
-    Parameters for Izhikevich networks
-    """
-    def __init__(self, a: GenArray, b: GenArray, c: GenArray, d: GenArray, inhibitory: GenArray,
-                 U: GenArray, F: GenArray, D: GenArray):
-        assert a.shape == b.shape == c.shape == d.shape == U.shape == F.shape == D.shape == inhibitory.shape
-        assert type(a) == type(b) == type(c) == type(d) == type(U) == type(F) == type(D) == type(inhibitory)
-        self.a = a
-        self.b = b
-        self.c = c
-        self.d = d
-        self.inhibitory = inhibitory
-        self.U = U
-        self.F = F
-        self.D = D
-
-    def __add__(self, other: "IzhParams"):
-        """
-        :param other: Another IzhParams object
-        :return: concatenation of all IzhParam parameters as new IzhParams object
-        """
-        assert type(self.a) == type(other.a) and isinstance(self.a, GenArray)
-        if isinstance(self.a, cp.ndarray):
-            dev = cp
-        else:
-            dev = np
-        new_a = dev.concatenate([self.a, other.a])
-        new_b = dev.concatenate([self.b, other.b])
-        new_c = dev.concatenate([self.c, other.c])
-        new_d = dev.concatenate([self.d, other.d])
-        new_inhibitory = dev.concatenate([self.inhibitory, other.inhibitory])
-        new_U = dev.concatenate([self.U, other.U])
-        new_F = dev.concatenate([self.F, other.F])
-        new_D = dev.concatenate([self.D, other.D])
-
-        return IzhParams(new_a, new_b, new_c, new_d, new_inhibitory, new_U, new_F, new_D)
-
-
-# Cortical excitatory, constant paramterizations
-class RSParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
+class SynapticConnection:
+    def __init__(self, connection_weights: GenArray, mask: GenArray, is_cuda: bool):
+        assert connection_weights.shape == mask.shape
         if is_cuda:
             dev = cp
+            self.device = "cuda"
         else:
             dev = np
-        a = dev.full(length, .02)
-        b = dev.full(length, .2)
-        c = dev.full(length, -65.0)
-        d = dev.full(length, 8.0)
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
+            self.device = "cpu"
+        self.connection = connection_weights
+        self.mask = mask
 
+    def remask(self):
+        self.connection = self.connection * self.mask
 
-class IBParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
+    def is_cuda(self, is_cuda: bool):
         if is_cuda:
-            dev = cp
+            self.device = "cuda"
+            if not isinstance(self.connection, cp.ndarray):
+                self.connection = cp.asarray(self.connection)
+            if not isinstance(self.mask, cp.ndarray):
+                self.mask = cp.asarray(self.mask)
         else:
-            dev = np
-        a = dev.full(length, .02)
-        b = dev.full(length, .2)
-        c = dev.full(length, -55.0)
-        d = dev.full(length, 4.0)
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-class CHParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        a = dev.full(length, .02)
-        b = dev.full(length, .2)
-        c = dev.full(length, -50.0)
-        d = dev.full(length, 2.0)
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-# Cortical inhibitory, constant paramterizations
-class FSParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        a = dev.full(length, .1)
-        b = dev.full(length, .2)
-        c = dev.full(length, -65.0)
-        d = dev.full(length, 2.0)
-        inhibitory = dev.full(length, True)
-        U = dev.full(length, 0.2)
-        F = dev.full(length, 20.0)
-        D = dev.full(length, 700.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-class LTSParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        a = dev.full(length, .02)
-        b = dev.full(length, .25)
-        c = dev.full(length, -65.0)
-        d = dev.full(length, 2.0)
-        inhibitory = dev.full(length, True)
-        U = dev.full(length, 0.2)
-        F = dev.full(length, 20.0)
-        D = dev.full(length, 700.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-# "Other" neurons
-class RZParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        a = dev.full(length, .1)
-        b = dev.full(length, .25)
-        c = dev.full(length, -65.0)
-        d = dev.full(length, 2.0)
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-class TCParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        a = dev.full(length, .25)
-        b = dev.full(length, .02)
-        c = dev.full(length, -65.0)
-        d = dev.full(length, .05)
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-# Distribution corresponding to original paper
-
-class SimpleExcitatoryParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        r = dev.random.rand(length)
-        a = dev.full(length, .02)
-        b = dev.full(length, .2)
-        c = 15*r**2 - 65
-        d = 8-6*r**2
-        inhibitory = dev.full(length, False)
-        U = dev.full(length, .5)
-        F = dev.full(length, 1000.0)
-        D = dev.full(length, 800.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
-
-class SimpleInhibitoryParams(IzhParams):
-    def __init__(self, length: int, is_cuda: bool):
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-        r = dev.random.rand(length)
-        a = .02+0.08*r
-        b = 0.25-0.05*r
-        c = dev.full(length, -65.0)
-        d = dev.full(length, 2.0)
-        inhibitory = dev.full(length, True)
-        U = dev.full(length, 0.2)
-        F = dev.full(length, 20.0)
-        D = dev.full(length, 700.0)
-        super().__init__(a, b, c, d, inhibitory, U, F, D)
-
+            self.device = "cpu"
+            if not isinstance(self.connection, np.ndarray):
+                self.connection = cp.asnumpy(self.connection)
+            if not isinstance(self.mask, np.ndarray):
+                self.mask = cp.asnumpy(self.mask)
 
 
 class IzhNet:
@@ -218,6 +44,7 @@ class IzhNet:
     def __init__(self):
         self.parameters = []
         self.firing_populations = {}
+        self.neural_outputs = {}
         self.population_connections = {}
         self.device = 'cpu'
 
@@ -234,108 +61,29 @@ class IzhNet:
         :return: None
         """
         self.device = 'cuda' if is_cuda else 'cpu'
-        for param_name in self.parameters:
-            arr = getattr(self, param_name)  # get the attribute
-            if self.device == 'cuda':
-                # move to GPU (cupy)
-                if not isinstance(arr, cp.ndarray):
-                    arr = cp.asarray(arr)
+        for group in self.firing_populations.values():
+            group.is_cuda(is_cuda)
+        for group_pairs in self.population_connections.keys():
+            if is_cuda:
+                self.population_connections[group_pairs].is_cuda(True)
             else:
-                # move to CPU (numpy)
-                if not isinstance(arr, np.ndarray):
-                    arr = cp.asnumpy(arr)
-            setattr(self, param_name, arr)
+                self.population_connections[group_pairs].is_cuda(False)
 
+    def add_population(self, firing_pop: nu.NeuronPopulation, pop_name: str):
+        self.firing_populations[pop_name] = firing_pop
+        self.neural_outputs[pop_name] = firing_pop.get_output()
 
-    def add_population(self, firing_pop: GenArray):
+    def add_connection(self, group_pairs: tuple[str], connection: SynapticConnection):
+        assert all(group in self.firing_populations for group in group_pairs)
+        self.population_connections[group_pairs] = connection
 
-    def add_connection(self, connection: tuple[int]):
-
-
-
-class InputPopulation(IzhNet):
-    '''
-    Technically not an Izhikevich network
-    '''
-    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, fire_rate: float):
-        super().__init__()
-        if is_cuda:
-            dev = cp
-        else:
-            dev = np
-
-        self.device = "cuda" if is_cuda else "cpu"
-
-        self.inhibitory = dev.concatenate([dev.zeros(num_excitatory),
-                                           dev.ones(num_inhibitory)], axis=0)
-
-        self.parameters.append('inhibitory')
-
-        self.U = dev.concatenate([dev.full(num_excitatory, .5),
-                                  dev.full(num_inhibitory, 0.2)], axis=0)
-        self.parameters.append('U')
-        self.F = dev.concatenate([dev.full(num_excitatory, 1000.0),
-                                  dev.full(num_inhibitory, 20.0)], axis=0)
-        self.parameters.append('F')
-        self.D = dev.concatenate([dev.full(num_excitatory, 800.0),
-                                  dev.full(num_inhibitory, 700.0)], axis=0)
-        self.parameters.append('D')
-        self.R = dev.zeros_like(self.U)
-        self.parameters.append('R')
-        self.w = dev.zeros_like(self.U)
-        self.parameters.append('w')
-        self.fire_rate = fire_rate
-        self.fired = dev.zeros_like(self.U)
-        self.parameters.append('fired')
-
-    def step(self, input=None, network=None):
-        if self.device == "cuda":
-            dev = cp
-        else:
-            dev = np
-        self.fired = dev.random.rand(self.inhibitory.size) < self.fire_rate
-        self.facilitation_update()
-
-    def is_cuda(self, is_cuda: bool):
-        """
-        Switches device for network
-        :param is_cuda: whether network is on cuda device
-        :return: None
-        """
-        self.device = 'cuda' if is_cuda else 'cpu'
-        for param_name in self.parameters:
-            arr = getattr(self, param_name)  # get the attribute
-            if self.device == 'cuda':
-                # move to GPU (cupy)
-                if not isinstance(arr, cp.ndarray):
-                    arr = cp.asarray(arr)
-            else:
-                # move to CPU (numpy)
-                if not isinstance(arr, np.ndarray):
-                    arr = cp.asnumpy(arr)
-            setattr(self, param_name, arr)
-
-    def set_rate(self, fire_rate: float):
-        self.fire_rate = fire_rate
-
-    def get_output(self, indices):
-        return (self.fired*self.w*self.R)[indices], self.inhibitory[indices]
-
-    def facilitation_update(self):
-        """
-        :return:
-        """
-        self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
-        self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
 
 
 class RecurrentIzhNet(IzhNet):
     """
     An Izhikevich network
     """
-    def __init__(self, params: IzhParams, connections: GenArray, conductive: bool, mask: Optional[GenArray] = None,
-                 tau_a: float = DEFAULT_TAU_A, tau_b: float = DEFAULT_TAU_B,
-                 tau_c: float = DEFAULT_TAU_C, tau_d: float = DEFAULT_TAU_D):
+    def __init__(self, pop: nu.IzhPopulation, connections: GenArray, conductive: bool, mask: Optional[GenArray] = None):
         if type(params.a) == cp.ndarray:
             self.device = 'cuda'
         else:
