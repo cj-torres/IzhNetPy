@@ -48,11 +48,24 @@ class IzhNet:
         self.population_connections = {}
         self.device = 'cpu'
 
-    def __call__(self, input_voltages, input_network):
-        self.step(input_voltages, input_network)
+    def __call__(self, input_voltages):
+        self.step(input_voltages)
 
-    def step(self, input_voltages, input_network):
-        raise NotImplemented
+    def step(self, input_voltages):
+        if self.device is 'cpu':
+            dev = np
+        else:
+            dev = cp
+        for name, pop in self.firing_populations.items():
+            input_voltage = dev.zeros(pop.shape[0])
+            for (presynaptic_name, postsynaptic_name), cnxn in self.population_connections.items():
+                if postsynaptic_name == name:
+                    input_voltage += cnxn @ self.neural_outputs[name]
+            pop(input_voltage)
+        for name, pop in self.firing_populations.items():
+            self.neural_outputs[name] = pop.get_output()
+
+
 
     def is_cuda(self, is_cuda: bool):
         """
