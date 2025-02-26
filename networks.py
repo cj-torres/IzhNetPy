@@ -40,7 +40,7 @@ class IzhNet:
     """
 
     def __init__(self):
-        self.parameters = []
+        # self.parameters = []
         self.firing_populations = {}
         self.neural_outputs = {}
         self.population_connections = {}
@@ -85,7 +85,8 @@ class IzhNet:
 
 
 class SimpleNetwork(IzhNet):
-    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, conductive: bool, p_mask: float = 0):
+    def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, conductive: bool, p_mask: float = 0,
+                 name: str = 'pop'):
         super().__init__()
         if is_cuda:
             dev = cp
@@ -97,11 +98,37 @@ class SimpleNetwork(IzhNet):
         total_num = num_inhibitory + num_excitatory
         synaptic_cnxn = SynapticConnection(dev.random.randn(total_num, total_num),
                                            dev.random.rand(total_num, total_num) > p_mask, is_cuda)
-        self.add_population(pop, 'pop_0')
-        self.add_connection(('pop_0', 'pop_0'), synaptic_cnxn)
+        self.add_population(pop, name)
+        self.add_connection((name, name), synaptic_cnxn)
+        self.name = name
 
 
 class BoolNet(IzhNet):
-    def __init__(self, n_outputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool):
+    def __init__(self, n_inputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool, p_mask: float = 0):
         super().__init__()
-        self.populations = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive) for _ in range(n_outputs)]
+        if is_cuda:
+            dev = cp
+        else:
+            dev = np
+        out_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'output_pop_{i}')
+                        for i in range(2)]
+        in_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'input_pop_{i}')
+                       for i in range(n_inputs)]
+        hidden_network = SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'input_pop_{i}')
+        n_total = n_e + n_i
+        for network in out_networks:
+            self.firing_populations.update(network.firing_populations)
+            self.population_connections.update(network.population_connections)
+            self.neural_outputs.update(network.neural_outputs)
+            for other_network in out_networks:
+                if network.name != other_network.name:
+                    # generate new connection
+                    # may need to make this explicitly inhibitory in the future
+                    new_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+                                                  dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+                    self.population_connections[(network.name, other_network.name)] = new_cnxn
+
+
+
+
+
