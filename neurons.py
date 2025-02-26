@@ -350,10 +350,10 @@ class InputPopulation(NeuronPopulation):
 
 
 class SimpleInput(InputPopulation):
-    def __init__(self, n_excitatory: int, n_inhibitory: int, is_cuda: bool):
+    def __init__(self, n_excitatory: int, n_inhibitory: int, is_cuda: bool, is_conductive: bool):
         input_params = (SimpleExcitatoryInputParams(n_excitatory, is_cuda) +
                         SimpleInhibitoryInputParams(n_inhibitory, is_cuda))
-        super().__init__(input_params, is_cuda)
+        super().__init__(input_params, is_cuda, is_conductive)
 
 
 class IzhPopulation(NeuronPopulation):
