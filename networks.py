@@ -112,14 +112,33 @@ class BoolNet(IzhNet):
             dev = np
         out_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'output_pop_{i}')
                         for i in range(2)]
-        in_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'input_pop_{i}')
-                       for i in range(n_inputs)]
-        hidden_network = SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'input_pop_{i}')
+        in_networks = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
+        teacher_networks = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(2)]
+        hidden_network = SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'hidden_pop')
+
+        # add hidden network info
+        self.firing_populations.update(hidden_network.firing_populations)
+        self.population_connections.update(hidden_network.population_connections)
+        self.neural_outputs.update(hidden_network.neural_outputs)
+
+        # add output network info, plus connections between it and teachers/hidden layer
         n_total = n_e + n_i
-        for network in out_networks:
+        for i, (network, teacher) in enumerate(zip(out_networks, teacher_networks)):
             self.firing_populations.update(network.firing_populations)
+            self.firing_populations[f'teacher_{i}'] = teacher
+
             self.population_connections.update(network.population_connections)
+
+            teacher_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+                                              dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            self.population_connections[(f'teacher_{i}', network.name)] = teacher_cnxn
+
             self.neural_outputs.update(network.neural_outputs)
+            self.neural_outputs[f'teacher_{i}'] = teacher.get_output()
+
+            hidden_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+                                             dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            self.population_connections[('hidden_pop', network.name)] = hidden_cnxn
             for other_network in out_networks:
                 if network.name != other_network.name:
                     # generate new connection
@@ -127,6 +146,15 @@ class BoolNet(IzhNet):
                     new_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
                                                   dev.random.rand(n_total, n_total) > p_mask, is_cuda)
                     self.population_connections[(network.name, other_network.name)] = new_cnxn
+
+        # add input network information
+        for i, input_network in enumerate(in_networks):
+            self.firing_populations[f'input_{i}'] = input_network
+            in_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+                                         dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            self.population_connections[(f'input_{i}', 'hidden_pop')] = in_cnxn
+            self.neural_outputs[f'input_{i}'] = input_network.get_output()
+
 
 
 
