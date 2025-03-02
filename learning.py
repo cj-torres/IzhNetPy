@@ -1,6 +1,6 @@
 import cupy as cp
 import numpy as np
-from networks import nt
+import networks as nt
 import neurons as nu
 
 
@@ -36,10 +36,11 @@ class SimpleSTDP(LearningMechanism):
         self.device = 'cuda'
         self.t_fireds = {}
         self.d_connections = {}
-        for pop, connection in self.network.population_connections.items():
-
-            self.t_fired = dev.full_like(self.network.firing_populations[pop].fired, 0)
-            self.d_connections = dev.full_like(connection, 0)
+        for (pre_pop, post_pop), connection in self.network.population_connections.items():
+            if isinstance(post_pop, nu.IzhPopulation):
+                self.t_fired = dev.full_like(self.network.firing_populations[pre_pop].fired, 0)
+                self.t_fired = dev.full_like(self.network.firing_populations[post_pop].fired, 0)
+                self.d_connections[(pre_pop, post_pop)] = dev.full_like(connection, 0)
 
     def update_weights(self):
         if self.network.device == 'cuda':
@@ -47,31 +48,43 @@ class SimpleSTDP(LearningMechanism):
         else:
             dev = np
 
-        # quiescent dynamics
-        self.d_connections = self.d_connections - (self.d_connections - self.alpha) * self.beta
+        for pop, t_fired in self.t_fireds:
+            # update time since neurons fired
+            self.t_fireds[pop][self.network.firing_populations[pop].fired] = 0
 
-        # time since neurons fired
-        self.t_fired[self.network.fired] = 0
-        post_minus_pre = np.subtract.outer(self.t_fired, self.t_fired)
+        for pops, d_connection in self.d_connections.items():
+            if self.network.population_connections[pops].can_update:
+                pre_pop, post_pop = pops
+                pre_fired = self.network.firing_populations[pre_pop].fired
+                post_fired = self.network.firing_populations[post_pop].fired
 
-        # if dev.any(pre_minus_post < 0):
-        #     breakpoint()
+                # quiescent dynamics
+                d_connection = d_connection - (d_connection - self.alpha) * self.beta
 
-        self.t_fired += 1
-        # breakpoint()
-        self.d_connections += (                                                                # piecewise function
-            (post_minus_pre < 0) * self.a_plus * dev.exp(post_minus_pre / self.tau_plus) +     # Negative branch
-            (post_minus_pre > 0) * self.a_minus * dev.exp(-post_minus_pre / self.tau_minus)       # Positive branch
-        ) * dev.logical_or.outer(self.network.fired, self.network.fired)                      # only update when fired
+                # calculate difference between post and pre
+                post_minus_pre = dev.subtract.outer(self.t_fireds[post_fired], self.t_fireds[pre_fired]).transpose()
 
-        # if any(self.network.fired):
-        #     breakpoint()
+                # update t_fired after using it
+                for pop in self.t_fireds.keys():
+                    self.t_fireds[pop] += 1
 
-        self.network.connections += self.d_connections * self.network.mask
-        self.network.connections[self.network.inhibitory] = (
-            self.network.connections[self.network.inhibitory].clip(self.min_i, self.max_i))
-        self.network.connections[self.network.inhibitory == False] = (
-            self.network.connections[self.network.inhibitory == False].clip(self.min_e, self.max_e))
+                # update d_connection (locally)
+                d_connection += (                                                                # piecewise function
+                    (post_minus_pre < 0) * self.a_plus * dev.exp(post_minus_pre / self.tau_plus) +     # Negative branch
+                    (post_minus_pre > 0) * self.a_minus * dev.exp(-post_minus_pre / self.tau_minus)       # Positive branch
+                ) * dev.logical_or.outer(pre_fired, post_fired)                  # only update when fired
+
+                # pull inhibitory
+                inhib = self.network.firing_populations[pre_pop].inhibitory
+
+                self.network.population_connections[pops] += d_connection * self.network.population_connections[pops].mask
+                self.network.population_connections[pops][inhib] = (
+                    self.network.population_connections[pops][inhib].clip(self.min_i, self.max_i))
+                self.network.population_connections[pops][inhib==False] = (
+                    self.network.population_connections[pops][inhib==False].clip(self.min_e, self.max_e))
+
+                # update d_connection for pop
+                self.d_connections[pops] = d_connection
 
 
 class BraderSTDP(LearningMechanism):
@@ -99,14 +112,14 @@ class BraderSTDP(LearningMechanism):
         self.j_inh = j_inhibitory
         self.theta_x = theta_x
         self.x_max = x_max
-        self.population_xs = {}
+        self.connection_xs = {}
         self.population_cs = {}
 
         for (pop_1, pop_2), connection in self.network.population_connections:
             if isinstance(pop_2, nu.IzhPopulation):
-                self.population_xs[pop_1] = dev.full_like(connection, self.theta_x)
+                self.connection_xs[(pop_1, pop_2)] = dev.full_like(connection, self.theta_x)
                 neurons = self.network.firing_populations[pop_1]
-                self.population_cs[pop_1] = dev.zeros_like(neurons)
+                self.population_cs[pop_2] = dev.zeros_like(neurons)
 
         # quiescent parameters
         self.alpha = alpha
@@ -124,43 +137,50 @@ class BraderSTDP(LearningMechanism):
         else:
             dev = np
 
-        for pop, x in self.population_xs:
-            fired = self.network.firing_populations[pop].fired
-            v = self.network.firing_populations[pop].v
-            c = self.population_cs[pop]
-            # calcium update
-            c = c - c/self.tau_c
-            c[fired] += self.c_inc
+        for pops, x in self.connection_xs:
+            if self.network.population_connections[pops].can_update:
+                pre_pop, post_pop = pops
+                pre_fired = self.network.firing_populations[pre_pop].fired
+                post_fired = self.network.firing_populations[post_pop].fired
 
-            # calculate which post-synaptic neurons have their synapses eligible for updates
-            x_increase_post = dev.logical_and(v > self.voltage_threshold, self.theta_u_l < c,
-                                              c < self.theta_u_h)
+                # get post-synaptic neuron info
+                v = self.network.firing_populations[post_pop].v
+                c = self.population_cs[post_pop]
 
-            x_decrease_post = dev.logical_and(v <= self.voltage_threshold, self.theta_d_l < c,
-                                              c < self.theta_d_h)
+                # calcium update
+                c = c - c/self.tau_c
+                c[post_fired] += self.c_inc
 
-            # calculate which synapses are eligible for updates
-            # (when the post-synaptic neuron is eligible and the pre-synaptic neuron fires)
-            x_increase_synapse = dev.logical_and.outer(x_increase_post, fired)
+                # calculate which post-synaptic neurons have their synapses eligible for updates
+                x_increase_post = dev.logical_and(v > self.voltage_threshold, self.theta_u_l < c,
+                                                  c < self.theta_u_h)
 
-            x_decrease_synapse = dev.logical_and.outer(x_decrease_post, fired)
+                x_decrease_post = dev.logical_and(v <= self.voltage_threshold, self.theta_d_l < c,
+                                                  c < self.theta_d_h)
 
-            # which synapses are not updated
-            x_quiescent = dev.logical_not(dev.logical_or(x_increase_synapse, x_decrease_synapse))
+                # calculate which synapses are eligible for updates
+                # (when the post-synaptic neuron is eligible and the pre-synaptic neuron fires)
+                x_increase_synapse = dev.logical_and.outer(x_increase_post, pre_fired)
 
-            self.population_xs[pop][x_increase_synapse] += self.u_inc
-            self.population_xs[pop][x_decrease_synapse] -= self.d_inc
-            self.population_xs[pop][x_quiescent] += (self.alpha*(self.population_xs[x_quiescent] > self.theta_x) +  # above threshold branch
-                                    self.beta*(self.population_xs[x_quiescent] <= self.theta_x))   # below threshold branch
+                x_decrease_synapse = dev.logical_and.outer(x_decrease_post, pre_fired)
 
-            # finally, synaptic weights are set to one of four values
-            pos_weights = self.population_xs[pop] > self.theta_x
-            self.network.population_connections[pop][pos_weights] = self.j_pos
-            self.network.population_connections[pop][dev.logical_not(pos_weights)] = self.j_neg
-            self.network.population_connections[pop][:, self.network.firing_populations[pop].inhibitory] = self.j_inh
-            self.network.population_connections[pop][self.network.population_connections[pop].mask] = 0
+                # which synapses are not updated
+                x_quiescent = dev.logical_not(dev.logical_or(x_increase_synapse, x_decrease_synapse))
 
-            self.population_cs[pop] = c
+                self.connection_xs[pops][x_increase_synapse] += self.u_inc
+                self.connection_xs[pops][x_decrease_synapse] -= self.d_inc
+                self.connection_xs[pops][x_quiescent] += (self.alpha*(self.connection_xs[x_quiescent] > self.theta_x) +  # above threshold branch
+                                        self.beta*(self.connection_xs[x_quiescent] <= self.theta_x))   # below threshold branch
+
+                # finally, synaptic weights are set to one of four values
+                pos_weights = self.connection_xs[pops] > self.theta_x
+                self.network.population_connections[pops][pos_weights] = self.j_pos
+                self.network.population_connections[pops][dev.logical_not(pos_weights)] = self.j_neg
+                self.network.population_connections[pops][:, self.network.firing_populations[pre_pop].inhibitory] = self.j_inh
+                self.network.population_connections[pops][self.network.population_connections[pops].mask] = 0
+
+                # update c variable
+                self.population_cs[post_pop] = c
 
 
 

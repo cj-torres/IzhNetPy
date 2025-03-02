@@ -264,10 +264,15 @@ class SimpleInhibitoryInputParams(InputParams):
 
 
 class NeuronPopulation:
-    def __init__(self):
-        self.fired = None
-        self.parameters = []
-        self.device = 'cpu'
+    def __init__(self, is_cuda: bool):
+        if is_cuda:
+            self.device = 'cuda'
+            dev = cp
+        else:
+            self.device = 'cpu'
+            dev = np
+        self.fired = dev.ndarray((0,))
+        self.parameters = ['fired']
 
     def is_cuda(self, is_cuda: bool):
         """
@@ -298,14 +303,37 @@ class NeuronPopulation:
         raise NotImplemented
 
 
-class InputPopulation(NeuronPopulation):
-    def __init__(self, params: InputParams, is_cuda: bool, conductive: bool):
+class GaussianPopulation(NeuronPopulation):
+    def __init__(self, mean: GenArray, std: GenArray, is_cuda: bool):
         if is_cuda:
             dev = cp
         else:
             dev = np
+        super().__init__(is_cuda)
+        self.mean = mean
+        self.std = std
+        self.is_cuda = is_cuda
+        self.fired = dev.full_like(self.mean, True)
+        self.parameters.extend(['mean', 'std'])
 
-        super().__init__()
+    def get_output(self):
+        if self.is_cuda:
+            dev = cp
+        else:
+            dev = np
+        return dev.random.normal(loc=self.mean, scale=self.std)
+
+
+class InputPopulation(NeuronPopulation):
+    def __init__(self, params: InputParams, conductive: bool):
+        if type(params.U) == cp.ndarray:
+            dev = cp
+            is_cuda = True
+        else:
+            is_cuda = False
+            dev = np
+
+        super().__init__(is_cuda)
 
         self.device = "cuda" if is_cuda else "cpu"
         self.conductive = conductive
@@ -354,7 +382,7 @@ class SimpleInput(InputPopulation):
     def __init__(self, n_excitatory: int, n_inhibitory: int, is_cuda: bool, is_conductive: bool):
         input_params = (SimpleExcitatoryInputParams(n_excitatory, is_cuda) +
                         SimpleInhibitoryInputParams(n_inhibitory, is_cuda))
-        super().__init__(input_params, is_cuda, is_conductive)
+        super().__init__(input_params, is_conductive)
 
 
 class IzhPopulation(NeuronPopulation):
@@ -363,10 +391,12 @@ class IzhPopulation(NeuronPopulation):
                  tau_c: float = DEFAULT_TAU_C, tau_d: float = DEFAULT_TAU_D):
         if type(params.a) == cp.ndarray:
             self.device = 'cuda'
+            is_cuda = True
         else:
+            is_cuda = False
             self.device = 'cpu'
 
-        super().__init__()
+        super().__init__(is_cuda)
 
         # standard params
         self.a = params.a

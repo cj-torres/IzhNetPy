@@ -7,7 +7,7 @@ GenArray = Union[cp.ndarray, np.ndarray]  # used repeatedly throughout code
 
 
 class SynapticConnection:
-    def __init__(self, connection_weights: GenArray, mask: GenArray, is_cuda: bool):
+    def __init__(self, connection_weights: GenArray, mask: GenArray, is_cuda: bool, can_update: bool = True):
         assert connection_weights.shape == mask.shape
         if is_cuda:
             self.device = "cuda"
@@ -15,6 +15,7 @@ class SynapticConnection:
             self.device = "cpu"
         self.connection = connection_weights
         self.mask = mask
+        self.can_update = can_update
 
     def remask(self):
         self.connection = self.connection * self.mask
