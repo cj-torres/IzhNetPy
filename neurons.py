@@ -265,6 +265,7 @@ class SimpleInhibitoryInputParams(InputParams):
 
 class NeuronPopulation:
     def __init__(self):
+        self.fired = None
         self.parameters = []
         self.device = 'cpu'
 

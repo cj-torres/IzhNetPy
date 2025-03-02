@@ -1,10 +1,11 @@
 import cupy as cp
 import numpy as np
-from networks import IzhNet, IzhParams
+from networks import nt
+import neurons as nu
 
 
 class LearningMechanism:
-    def __init__(self, network: IzhNet):
+    def __init__(self, network: nt.IzhNet):
         self.network = network
         
     def update_weights(self):
@@ -12,7 +13,7 @@ class LearningMechanism:
     
 
 class SimpleSTDP(LearningMechanism):
-    def __init__(self, network: IzhNet, a_plus: float, a_minus: float, tau_plus: float, tau_minus: float,
+    def __init__(self, network: nt.IzhNet, a_plus: float, a_minus: float, tau_plus: float, tau_minus: float,
                  min_e: float = 0, max_e: float = .5, min_i: float = -.5, max_i: float = 0,
                  alpha: float = 10e-6, beta: float = 10e-4):
         super(SimpleSTDP, self).__init__(network)
@@ -33,8 +34,12 @@ class SimpleSTDP(LearningMechanism):
             dev = np
 
         self.device = 'cuda'
-        self.t_fired = dev.full_like(self.network.v, 0)
-        self.d_connections = dev.full_like(self.network.connections, 0)
+        self.t_fireds = {}
+        self.d_connections = {}
+        for pop, connection in self.network.population_connections.items():
+
+            self.t_fired = dev.full_like(self.network.firing_populations[pop].fired, 0)
+            self.d_connections = dev.full_like(connection, 0)
 
     def update_weights(self):
         if self.network.device == 'cuda':
@@ -70,7 +75,7 @@ class SimpleSTDP(LearningMechanism):
 
 
 class BraderSTDP(LearningMechanism):
-    def __init__(self, network: IzhNet, x_max: float, voltage_threshold: float, theta_up_l: float, theta_up_h: float,
+    def __init__(self, network: nt.IzhNet, x_max: float, voltage_threshold: float, theta_up_l: float, theta_up_h: float,
                  theta_down_l: float, theta_down_h: float, theta_x: float, up_increment: float, down_increment: float,
                  c_increment: float, tau_c: float, alpha: float, beta: float, j_negative: float, j_positive: float,
                  j_inhibitory: float):
@@ -94,7 +99,14 @@ class BraderSTDP(LearningMechanism):
         self.j_inh = j_inhibitory
         self.theta_x = theta_x
         self.x_max = x_max
-        self.x = dev.full_like(self.network.connections, self.theta_x)
+        self.population_xs = {}
+        self.population_cs = {}
+
+        for (pop_1, pop_2), connection in self.network.population_connections:
+            if isinstance(pop_2, nu.IzhPopulation):
+                self.population_xs[pop_1] = dev.full_like(connection, self.theta_x)
+                neurons = self.network.firing_populations[pop_1]
+                self.population_cs[pop_1] = dev.zeros_like(neurons)
 
         # quiescent parameters
         self.alpha = alpha
@@ -103,7 +115,8 @@ class BraderSTDP(LearningMechanism):
         # calcium dynamics
         self.tau_c = tau_c
         self.c_inc = c_increment
-        self.c = dev.zeros_like(self.network.fired)
+
+        self.population_cs = {}
 
     def update_weights(self):
         if self.network.device == 'cuda':
@@ -111,37 +124,43 @@ class BraderSTDP(LearningMechanism):
         else:
             dev = np
 
-        # calcium update
-        self.c = self.c - self.c/self.tau_c
-        self.c[self.network.fired] += self.c_inc
+        for pop, x in self.population_xs:
+            fired = self.network.firing_populations[pop].fired
+            v = self.network.firing_populations[pop].v
+            c = self.population_cs[pop]
+            # calcium update
+            c = c - c/self.tau_c
+            c[fired] += self.c_inc
 
-        # calculate which post-synaptic neurons have their synapses eligible for updates
-        x_increase_post = dev.logical_and(self.network.v > self.voltage_threshold, self.theta_u_l < self.c,
-                                          self.c < self.theta_u_h)
+            # calculate which post-synaptic neurons have their synapses eligible for updates
+            x_increase_post = dev.logical_and(v > self.voltage_threshold, self.theta_u_l < c,
+                                              c < self.theta_u_h)
 
-        x_decrease_post = dev.logical_and(self.network.v <= self.voltage_threshold, self.theta_d_l < self.c,
-                                          self.c < self.theta_d_h)
+            x_decrease_post = dev.logical_and(v <= self.voltage_threshold, self.theta_d_l < c,
+                                              c < self.theta_d_h)
 
-        # calculate which synapses are eligible for updates
-        # (when the post-synaptic neuron is eligible and the pre-synaptic neuron fires)
-        x_increase_synapse = dev.logical_and.outer(x_increase_post, self.network.fired)
+            # calculate which synapses are eligible for updates
+            # (when the post-synaptic neuron is eligible and the pre-synaptic neuron fires)
+            x_increase_synapse = dev.logical_and.outer(x_increase_post, fired)
 
-        x_decrease_synapse = dev.logical_and.outer(x_decrease_post, self.network.fired)
+            x_decrease_synapse = dev.logical_and.outer(x_decrease_post, fired)
 
-        # which synapses are not updated
-        x_quiescent = dev.logical_not(dev.logical_or(x_increase_synapse, x_decrease_synapse))
+            # which synapses are not updated
+            x_quiescent = dev.logical_not(dev.logical_or(x_increase_synapse, x_decrease_synapse))
 
-        self.x[x_increase_synapse] += self.u_inc
-        self.x[x_decrease_synapse] -= self.d_inc
-        self.x[x_quiescent] += (self.alpha*(self.x[x_quiescent] > self.theta_x) +  # above threshold branch
-                                self.beta*(self.x[x_quiescent] <= self.theta_x))   # below threshold branch
+            self.population_xs[pop][x_increase_synapse] += self.u_inc
+            self.population_xs[pop][x_decrease_synapse] -= self.d_inc
+            self.population_xs[pop][x_quiescent] += (self.alpha*(self.population_xs[x_quiescent] > self.theta_x) +  # above threshold branch
+                                    self.beta*(self.population_xs[x_quiescent] <= self.theta_x))   # below threshold branch
 
-        # finally, synaptic weights are set to one of four values
-        pos_weights = self.x > self.theta_x
-        self.network.connections[pos_weights] = self.j_pos
-        self.network.connections[dev.logical_not(pos_weights)] = self.j_neg
-        self.network.connections[:, self.network.inhibitory] = self.j_inh
-        self.network.connections[self.network.mask] = 0
+            # finally, synaptic weights are set to one of four values
+            pos_weights = self.population_xs[pop] > self.theta_x
+            self.network.population_connections[pop][pos_weights] = self.j_pos
+            self.network.population_connections[pop][dev.logical_not(pos_weights)] = self.j_neg
+            self.network.population_connections[pop][:, self.network.firing_populations[pop].inhibitory] = self.j_inh
+            self.network.population_connections[pop][self.network.population_connections[pop].mask] = 0
+
+            self.population_cs[pop] = c
 
 
 

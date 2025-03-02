@@ -96,7 +96,7 @@ class SimpleNetwork(IzhNet):
             nu.SimpleInhibitoryParams(num_inhibitory, is_cuda)
         pop = nu.IzhPopulation(pop_params, conductive)
         total_num = num_inhibitory + num_excitatory
-        synaptic_cnxn = SynapticConnection(dev.random.randn(total_num, total_num),
+        synaptic_cnxn = SynapticConnection(abs(dev.random.randn(total_num, total_num)),
                                            dev.random.rand(total_num, total_num) > p_mask, is_cuda)
         self.add_population(pop, name)
         self.add_connection((name, name), synaptic_cnxn)
@@ -129,31 +129,33 @@ class BoolNet(IzhNet):
 
             self.population_connections.update(network.population_connections)
 
-            teacher_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+            teacher_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
                                               dev.random.rand(n_total, n_total) > p_mask, is_cuda)
             self.population_connections[(f'teacher_{i}', network.name)] = teacher_cnxn
 
             self.neural_outputs.update(network.neural_outputs)
             self.neural_outputs[f'teacher_{i}'] = teacher.get_output()
 
-            hidden_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+            hidden_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
                                              dev.random.rand(n_total, n_total) > p_mask, is_cuda)
             self.population_connections[('hidden_pop', network.name)] = hidden_cnxn
             for other_network in out_networks:
                 if network.name != other_network.name:
                     # generate new connection
                     # may need to make this explicitly inhibitory in the future
-                    new_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+                    new_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
                                                   dev.random.rand(n_total, n_total) > p_mask, is_cuda)
                     self.population_connections[(network.name, other_network.name)] = new_cnxn
 
         # add input network information
         for i, input_network in enumerate(in_networks):
             self.firing_populations[f'input_{i}'] = input_network
-            in_cnxn = SynapticConnection(dev.random.randn(n_total, n_total),
+            in_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
                                          dev.random.rand(n_total, n_total) > p_mask, is_cuda)
             self.population_connections[(f'input_{i}', 'hidden_pop')] = in_cnxn
             self.neural_outputs[f'input_{i}'] = input_network.get_output()
+
+
 
 
 
