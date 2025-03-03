@@ -224,8 +224,8 @@ class InputParams:
         :param other: Another IzhParams object
         :return: concatenation of all IzhParam parameters as new IzhParams object
         """
-        assert type(self.a) == type(other.a) and isinstance(self.a, GenArray)
-        if isinstance(self.a, cp.ndarray):
+        assert type(self.U) == type(other.U) and isinstance(self.U, GenArray)
+        if isinstance(self.U, cp.ndarray):
             dev = cp
         else:
             dev = np
@@ -264,7 +264,7 @@ class SimpleInhibitoryInputParams(InputParams):
 
 
 class NeuronPopulation:
-    def __init__(self, is_cuda: bool):
+    def __init__(self, is_cuda: bool, is_input: bool):
         if is_cuda:
             self.device = 'cuda'
             dev = cp
@@ -273,6 +273,7 @@ class NeuronPopulation:
             dev = np
         self.fired = dev.ndarray((0,))
         self.parameters = ['fired']
+        self.is_input = is_input
 
     def is_cuda(self, is_cuda: bool):
         """
@@ -296,6 +297,9 @@ class NeuronPopulation:
     def __call__(self, *args, **kwargs):
         self.step(*args, **kwargs)
 
+    def __len__(self):
+        return len(self.fired)
+
     def step(self, *args, **kwargs):
         raise NotImplemented
 
@@ -309,7 +313,7 @@ class GaussianPopulation(NeuronPopulation):
             dev = cp
         else:
             dev = np
-        super().__init__(is_cuda)
+        super().__init__(is_cuda, True)
         self.mean = mean
         self.std = std
         self.is_cuda = is_cuda
@@ -333,7 +337,7 @@ class InputPopulation(NeuronPopulation):
             is_cuda = False
             dev = np
 
-        super().__init__(is_cuda)
+        super().__init__(is_cuda, True)
 
         self.device = "cuda" if is_cuda else "cpu"
         self.conductive = conductive
@@ -364,9 +368,9 @@ class InputPopulation(NeuronPopulation):
 
     def get_output(self):
         if self.conductive:
-            return (self.fired * self.w * self.R), self.inhibitory
+            return self.fired * self.w * self.R
         else:
-            return self.fired, self.inhibitory
+            return self.fired
 
     def step(self, fire_rate: float):
         if self.device == "cuda":
@@ -396,7 +400,7 @@ class IzhPopulation(NeuronPopulation):
             is_cuda = False
             self.device = 'cpu'
 
-        super().__init__(is_cuda)
+        super().__init__(is_cuda, False)
 
         # standard params
         self.a = params.a
@@ -507,6 +511,6 @@ class IzhPopulation(NeuronPopulation):
 
     def get_output(self):
         if self.conductive:
-            return (self.fired * self.w * self.R), self.inhibitory
+            return self.fired * self.w * self.R
         else:
-            return self.fired, self.inhibitory
+            return self.fired

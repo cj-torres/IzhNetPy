@@ -34,6 +34,10 @@ class SynapticConnection:
             if not isinstance(self.mask, np.ndarray):
                 self.mask = cp.asnumpy(self.mask)
 
+    def __matmul__(self, other):
+        connection_matrix = self.mask * self.connection
+        return connection_matrix @ other
+
 
 class IzhNet:
     """
@@ -47,20 +51,47 @@ class IzhNet:
         self.population_connections = {}
         self.device = 'cpu'
 
-    def __call__(self):
-        self.step()
+    def __call__(self, **kwargs):
+        self.step(**kwargs)
 
-    def step(self):
+    def step(self, **kwargs):
+        '''
+
+        Args:
+            **kwargs:
+
+        Returns:
+
+        '''
         if self.device is 'cpu':
             dev = np
         else:
             dev = cp
         for name, pop in self.firing_populations.items():
-            input_voltage = dev.zeros(pop.shape[0])
-            for (presynaptic_name, postsynaptic_name), cnxn in self.population_connections.items():
-                if postsynaptic_name == name:
-                    input_voltage += cnxn @ self.neural_outputs[name]
-            pop(input_voltage)
+            if name in kwargs:
+                external_inputs = kwargs[name]
+            else:
+                external_inputs = []
+            if not pop.is_input:
+                excitatory_input = dev.zeros(len(pop))
+                inhibitory_input = dev.zeros(len(pop))
+                for (presynaptic_name, postsynaptic_name), cnxn in self.population_connections.items():
+                    if postsynaptic_name == name:
+                        # breakpoint()
+                        inhibitory = self.firing_populations[presynaptic_name].inhibitory
+                        excitatory_input += cnxn @ (self.neural_outputs[name] * dev.logical_not(inhibitory))
+                        inhibitory_input += cnxn @ (self.neural_outputs[name] * inhibitory)
+                try:
+                    pop(excitatory_input, inhibitory_input, *external_inputs)
+                except TypeError as e:
+                    raise TypeError(f'Invalid input supplied to neuron cluster {name}') from e
+
+            else:
+                try:
+                    pop(*external_inputs)
+                except TypeError as e:
+                    raise TypeError(f'Invalid input supplied to neuron cluster {name}') from e
+
         for name, pop in self.firing_populations.items():
             self.neural_outputs[name] = pop.get_output()
 
@@ -113,7 +144,8 @@ class BoolNet(IzhNet):
             dev = np
         out_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'output_pop_{i}')
                         for i in range(2)]
-        in_networks = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
+        in_networks_0 = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
+        in_networks_1 = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
         teacher_networks = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(2)]
         hidden_network = SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'hidden_pop')
 
@@ -149,12 +181,19 @@ class BoolNet(IzhNet):
                     self.population_connections[(network.name, other_network.name)] = new_cnxn
 
         # add input network information
-        for i, input_network in enumerate(in_networks):
-            self.firing_populations[f'input_{i}'] = input_network
+        for i, input_network in enumerate(in_networks_0):
+            self.firing_populations[f'input_{i}_0'] = input_network
             in_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
                                          dev.random.rand(n_total, n_total) > p_mask, is_cuda)
-            self.population_connections[(f'input_{i}', 'hidden_pop')] = in_cnxn
-            self.neural_outputs[f'input_{i}'] = input_network.get_output()
+            self.population_connections[(f'input_{i}_0', 'hidden_pop')] = in_cnxn
+            self.neural_outputs[f'input_{i}_0'] = input_network.get_output()
+
+        for i, input_network in enumerate(in_networks_1):
+            self.firing_populations[f'input_{i}_1'] = input_network
+            in_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
+                                         dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            self.population_connections[(f'input_{i}_1', 'hidden_pop')] = in_cnxn
+            self.neural_outputs[f'input_{i}_1'] = input_network.get_output()
 
 
 
