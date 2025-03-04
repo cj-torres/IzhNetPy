@@ -138,6 +138,9 @@ class SimpleNetwork(IzhNet):
 class BoolNet(IzhNet):
     def __init__(self, n_inputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool, p_mask: float = 0):
         super().__init__()
+        self.quiescent_rate = .5
+        self.active_rate = .5
+
         if is_cuda:
             dev = cp
         else:
@@ -194,6 +197,31 @@ class BoolNet(IzhNet):
                                          dev.random.rand(n_total, n_total) > p_mask, is_cuda)
             self.population_connections[(f'input_{i}_1', 'hidden_pop')] = in_cnxn
             self.neural_outputs[f'input_{i}_1'] = input_network.get_output()
+
+    def __call__(self, boolean_input: nu.GenArray, target: nu.GenArray):
+        pop_inputs = {}
+        for i, boolean in enumerate(boolean_input):
+            if boolean == 0:
+                pop_inputs[f'input_{i}_0'] = self.quiescent_rate
+                pop_inputs[f'input_{i}_1'] = self.active_rate
+            else:
+                pop_inputs[f'input_{i}_0'] = self.active_rate
+                pop_inputs[f'input_{i}_1'] = self.quiescent_rate
+        if target == 0:
+            pop_inputs[f'teacher_0'] = self.quiescent_rate
+            pop_inputs[f'teacher_1'] = self.active_rate
+        else:
+            pop_inputs[f'teacher_0'] = self.active_rate
+            pop_inputs[f'teacher_1'] = self.quiescent_rate
+
+        self.step(**pop_inputs)
+
+    # TODO: set firing rates
+
+    # TODO: burn-in period
+
+    # TODO: read outputs
+
 
 
 

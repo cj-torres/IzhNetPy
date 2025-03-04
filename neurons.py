@@ -306,6 +306,9 @@ class NeuronPopulation:
     def get_output(self):
         raise NotImplemented
 
+    def firing_ratio(self):
+        return self.fired.mean()
+
 
 class GaussianPopulation(NeuronPopulation):
     def __init__(self, mean: GenArray, std: GenArray, is_cuda: bool):
