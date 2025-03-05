@@ -47,6 +47,7 @@ class IzhNet:
     def __init__(self):
         # self.parameters = []
         self.firing_populations = {}
+        self.firing_rates = {}
         self.neural_outputs = {}
         self.population_connections = {}
         self.device = 'cpu'
@@ -115,6 +116,10 @@ class IzhNet:
         assert all(group in self.firing_populations for group in group_pairs)
         self.population_connections[group_pairs] = connection
 
+    def calc_firing_rates(self):
+        for pop in self.firing_rates.values():
+            self.firing_rates[pop] = self.firing_populations[pop].firing_ratio()
+
 
 class SimpleNetwork(IzhNet):
     def __init__(self, num_excitatory: int, num_inhibitory: int, is_cuda: bool, conductive: bool, p_mask: float = 0,
@@ -133,6 +138,8 @@ class SimpleNetwork(IzhNet):
         self.add_population(pop, name)
         self.add_connection((name, name), synaptic_cnxn)
         self.name = name
+
+
 
 
 class BoolNet(IzhNet):
@@ -197,6 +204,12 @@ class BoolNet(IzhNet):
                                          dev.random.rand(n_total, n_total) > p_mask, is_cuda)
             self.population_connections[(f'input_{i}_1', 'hidden_pop')] = in_cnxn
             self.neural_outputs[f'input_{i}_1'] = input_network.get_output()
+
+        self.firing_rates = {}
+        for pop in self.firing_populations.keys():
+            self.firing_rates[pop] = 0.0
+
+
 
     def __call__(self, boolean_input: nu.GenArray, target: nu.GenArray):
         pop_inputs = {}
