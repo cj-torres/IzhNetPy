@@ -272,6 +272,7 @@ class NeuronPopulation:
             self.device = 'cpu'
             dev = np
         self.fired = dev.ndarray((0,))
+        self.inhibitory = dev.ndarray((0,))
         self.parameters = ['fired']
         self.is_input = is_input
 
@@ -313,22 +314,27 @@ class NeuronPopulation:
 class GaussianPopulation(NeuronPopulation):
     def __init__(self, mean: GenArray, std: GenArray, is_cuda: bool):
         if is_cuda:
+            self.device = 'cuda'
             dev = cp
         else:
+            self.device = 'cpu'
             dev = np
         super().__init__(is_cuda, True)
         self.mean = mean
         self.std = std
-        self.is_cuda = is_cuda
         self.fired = dev.full_like(self.mean, True)
+        self.inhibitory = dev.full_like(self.mean, False)
         self.parameters.extend(['mean', 'std'])
 
     def get_output(self):
-        if self.is_cuda:
+        if self.device == 'cuda':
             dev = cp
         else:
             dev = np
         return dev.random.normal(loc=self.mean, scale=self.std)
+
+    def step(self):
+        pass
 
 
 class InputPopulation(NeuronPopulation):
@@ -473,7 +479,7 @@ class IzhPopulation(NeuronPopulation):
         if self.conductive:
             input_voltages = self.synaptic_current()
         else:
-            input_voltages = excitatory_input + inhibitory_input
+            input_voltages = excitatory_input - inhibitory_input
 
         self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u + input_voltages)
         self.v = self.v.clip(max=30)
