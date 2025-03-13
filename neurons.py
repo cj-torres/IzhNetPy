@@ -101,7 +101,7 @@ class CHParams(IzhParams):
         super().__init__(a, b, c, d, inhibitory, U, F, D)
 
 
-# Cortical inhibitory, constant paramterizations
+# Cortical inhibitory, constant parameterizations
 class FSParams(IzhParams):
     def __init__(self, length: int, is_cuda: bool):
         if is_cuda:
@@ -310,6 +310,9 @@ class NeuronPopulation:
     def firing_ratio(self):
         return self.fired.mean()
 
+    def reset(self):
+        pass
+
 
 class GaussianPopulation(NeuronPopulation):
     def __init__(self, mean: GenArray, std: GenArray, is_cuda: bool):
@@ -387,8 +390,17 @@ class InputPopulation(NeuronPopulation):
         else:
             dev = np
         self.fired = dev.random.rand(self.inhibitory.size) < fire_rate
-        self.facilitation_update()
+        # self.facilitation_update()
         return self.get_output()
+
+    def reset(self):
+        if self.device == "cuda":
+            dev = cp
+        else:
+            dev = np
+        self.R = dev.zeros_like(self.U)
+        self.w = dev.zeros_like(self.U)
+        self.fired = dev.zeros_like(self.U).astype(bool)
 
 
 class SimpleInput(InputPopulation):
@@ -479,11 +491,13 @@ class IzhPopulation(NeuronPopulation):
         if self.conductive:
             input_voltages = self.synaptic_current()
         else:
-            input_voltages = excitatory_input - inhibitory_input
+            input_voltages = inhibitory_input - excitatory_input
 
-        self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u + input_voltages)
+        #breakpoint()
+
+        self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u - input_voltages)
         self.v = self.v.clip(max=30)
-        self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u + input_voltages)
+        self.v = self.v + .5 * (.04 * self.v ** 2 + 5 * self.v + 140 - self.u - input_voltages)
         self.v = self.v.clip(max=30)
         self.u = self.u + self.a * (self.b * self.v - self.u)
 
@@ -505,7 +519,7 @@ class IzhPopulation(NeuronPopulation):
         """
         :return:
         """
-
+        #breakpoint()
         self.g_a = self.g_a + excitatory_input - self.g_a / self.tau_a
         self.g_b = self.g_b + excitatory_input - self.g_b / self.tau_b
         self.g_c = self.g_c + inhibitory_input - self.g_c / self.tau_c
@@ -523,3 +537,20 @@ class IzhPopulation(NeuronPopulation):
             return self.fired * self.w * self.R
         else:
             return self.fired
+
+    def reset(self):
+        if self.device == 'cuda':
+            dev = cp
+        else:
+            dev = np
+        self.fired = dev.zeros_like(self.a).astype(bool)
+        self.v = dev.full_like(self.a, -65.0)  # starting voltage
+        self.u = self.b * self.v
+
+        # conductance variables
+        self.g_a = dev.zeros_like(self.a)
+        self.g_b = dev.zeros_like(self.a)
+        self.g_c = dev.zeros_like(self.a)
+        self.g_d = dev.zeros_like(self.a)
+        self.R = dev.zeros_like(self.a)
+        self.w = dev.zeros_like(self.a)

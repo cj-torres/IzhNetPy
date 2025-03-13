@@ -5,6 +5,7 @@ import cupy as cp
 import numpy as np
 import networks as nw
 import neurons as nu
+from tqdm import tqdm
 
 
 def simple_network_test():
@@ -19,6 +20,25 @@ def simple_network_test():
         net()
         fired.append(net.firing_populations['test'].fired)
     pl.plot_raster(np.stack(fired, axis=0), 'simple.png')
+
+
+def conductance_network_test_poisson(rate_exc=.05, rate_inh=.01):
+    net = nw.BraderNet(num_excitatory=800, num_inhibitory=200, w_max=.0003, w_min=0, w_inh=.0004,
+                           is_cuda=False, conductive=True, name='test')
+    net.add_population(nu.InputPopulation(nu.SimpleExcitatoryInputParams(800, False), False), 'noise_exc')
+    net.add_population(nu.InputPopulation(nu.SimpleInhibitoryInputParams(200, False), False), 'noise_inh')
+    cnxn_exc = nw.SimpleConnection(net.firing_populations['noise_exc'], net.firing_populations['test'], .002, 0, .005, False,
+                               is_brader=True) #, p_mask=.5)
+    cnxn_inh = nw.SimpleConnection(net.firing_populations['noise_inh'], net.firing_populations['test'], .004, 0, .004, False,
+                               is_brader=True) #, p_mask=.5)
+    net.add_connection(('noise_exc', 'test'), cnxn_exc)
+    net.add_connection(('noise_inh', 'test'), cnxn_inh)
+    fired = []
+    for t in tqdm(range(1000), desc='Testing conductance network'):
+        net(**{'noise_exc': rate_exc, 'noise_inh': rate_inh})
+        fired.append(net.firing_populations['test'].fired)
+    pl.plot_raster(np.stack(fired, axis=0), 'poisson.png')
+    print("Poisson Test Ended")
 
 
 # def two_neuron_depression():

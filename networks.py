@@ -39,6 +39,54 @@ class SynapticConnection:
         return connection_matrix @ other
 
 
+class InhibitoryConnection(SynapticConnection):
+    def __init__(self, group_1: nu.NeuronPopulation, group_2: nu.NeuronPopulation, w_inhibitory: float,
+                 can_update: bool, p_mask: float = 0, is_brader: bool = True):
+        dev = cp if group_1.device == 'cuda' else np
+        random_mask = dev.random.rand(len(group_2), len(group_1)) > p_mask
+        mask = random_mask * group_1.inhibitory
+        if is_brader:
+            connections = dev.full_like(mask, w_inhibitory) * mask
+        else:
+            connections = dev.random.uniform(low=0, high=w_inhibitory, size=(len(group_2), len(group_1))) * mask
+        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+
+
+class ExcitatoryConnection(SynapticConnection):
+    def __init__(self, group_1: nu.NeuronPopulation, group_2: nu.NeuronPopulation, w_high: float, w_low: float,
+                 can_update: bool, p_mask: float = 0, is_brader: bool = True):
+        dev = cp if group_1.device == 'cuda' else np
+        random_mask = dev.random.rand(len(group_2), len(group_1)) > p_mask
+        mask = random_mask * dev.logical_not(group_1.inhibitory)
+        if is_brader:
+            connections = dev.zeros((len(group_2), len(group_1)))
+            connection_is_high = dev.random.rand(len(group_2), len(group_1)) > .5
+            connections[connection_is_high] = w_high
+            connections[dev.logical_not(connection_is_high)] = w_low
+        else:
+            connections = dev.random.uniform(low=w_low, high=w_high, size=(len(group_2), len(group_1)))
+        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+
+
+class SimpleConnection(SynapticConnection):
+    def __init__(self, group_1: nu.NeuronPopulation, group_2: nu.NeuronPopulation, w_high: float, w_low: float,
+                 w_inhibitory: float, can_update: bool, p_mask: float = 0, is_brader: bool = True):
+        dev = cp if group_1.device == 'cuda' else np
+        random_mask = dev.random.rand(len(group_2), len(group_1)) > p_mask
+        mask = random_mask
+        if is_brader:
+            connections = dev.zeros((len(group_2), len(group_1)))
+            connection_is_high = dev.random.rand(len(group_2), len(group_1)) > .5
+            connections[connection_is_high] = w_high
+            connections[dev.logical_not(connection_is_high)] = w_low
+            connection_is_inhibitory = group_1.inhibitory
+            connections[:, connection_is_inhibitory] = w_inhibitory
+        else:
+            connections = dev.random.uniform(low=w_low, high=w_high, size=(len(group_2), len(group_1)))
+        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+
+
+
 class IzhNet:
     """
     Base class for Izhikevich Networks
@@ -132,6 +180,10 @@ class IzhNet:
         for pairs, connection in other_network.population_connections.items():
             self.add_connection(pairs, connection)
 
+    def reset_groups(self):
+        for group in self.firing_populations.values():
+            group.reset()
+
     def calc_firing_rates(self):
         for pop in self.firing_rates.values():
             self.firing_rates[pop] = self.firing_populations[pop].firing_ratio()
@@ -159,10 +211,23 @@ class SimpleNetwork(IzhNet):
         self.name = name
 
 
+class BraderNet(IzhNet):
+    def __init__(self, num_excitatory: int, num_inhibitory: int, w_max: float, w_min: float, w_inh: float,
+                 is_cuda: bool, conductive: bool, p_mask: float = 0, name: str = 'pop'):
+        super().__init__()
+        pop_params = nu.SimpleExcitatoryParams(num_excitatory, is_cuda) + \
+            nu.SimpleInhibitoryParams(num_inhibitory, is_cuda)
+        pop = nu.IzhPopulation(pop_params, conductive)
+
+        synaptic_cnxn = SimpleConnection(pop, pop, w_max, w_min, w_inh, True, p_mask=p_mask)
+        self.add_population(pop, name)
+        self.add_connection((name, name), synaptic_cnxn)
+        self.name = name
 
 
 class BoolNet(IzhNet):
-    def __init__(self, n_inputs: int, n_e: int, n_i: int, is_cuda: bool, is_conductive: bool, p_mask: float = 0):
+    def __init__(self, n_inputs: int, n_e: int, n_i: int, w_max: float, w_min: float, w_inh: float, is_cuda: bool,
+                 is_conductive: bool, p_mask: float = 0):
         super().__init__()
         self.n_inputs = n_inputs
         self.quiescent_rate = .5
@@ -174,53 +239,65 @@ class BoolNet(IzhNet):
             dev = cp
         else:
             dev = np
-        out_networks = [SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'output_pop_{i}')
+        hidden_sz = n_e+n_i
+        input_sz = hidden_sz//(n_inputs*2)
+
+        out_networks = [BraderNet(n_e, n_i, w_min, w_max, w_inh, is_cuda, is_conductive, p_mask, f'output_pop_{i}')
                         for i in range(2)]
-        in_networks_0 = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
-        in_networks_1 = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(n_inputs)]
-        teacher_networks = [nu.SimpleInput(n_e, n_i, is_cuda, is_conductive) for i in range(2)]
-        hidden_network = SimpleNetwork(n_e, n_i, is_cuda, is_conductive, p_mask, f'hidden_pop')
+        in_networks_0 = [nu.SimpleInput(input_sz, 0, is_cuda, is_conductive) for i in range(n_inputs)]
+        in_networks_1 = [nu.SimpleInput(input_sz, 0, is_cuda, is_conductive) for i in range(n_inputs)]
+        teacher_networks = [nu.SimpleInput(hidden_sz//2, 0, is_cuda, is_conductive) for i in range(2)]
+        hidden_network = BraderNet(n_e, n_i, w_min, w_max, w_inh, is_cuda, is_conductive, p_mask, f'hidden_pop')
 
         # add hidden network info
         self.add_network(hidden_network)
+        hidden_group = hidden_network.firing_populations[hidden_network.name]
 
         # add output network info, plus connections between it and teachers/hidden layer
-        n_total = n_e + n_i
         for i, (network, teacher) in enumerate(zip(out_networks, teacher_networks)):
             self.add_network(network)
             self.add_population(teacher, f'teacher_{i}')
 
-            teacher_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
-                                              dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            out_group = network.firing_populations[network.name]
+
+            teacher_cnxn = ExcitatoryConnection(
+                teacher, out_group, w_max, w_min, False
+            )
+
             self.population_connections[(f'teacher_{i}', network.name)] = teacher_cnxn
             self.output_pops.add(network.name)
             self.teacher_pops.add(f'teacher_{i}')
 
-            hidden_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
-                                             dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            hidden_cnxn = SimpleConnection(
+                hidden_group, out_group, w_max, w_min, w_inh, True, p_mask=p_mask
+            )
+
             self.population_connections[('hidden_pop', network.name)] = hidden_cnxn
 
-            for other_network in out_networks:
-                if network.name != other_network.name:
-                    # generate new connection
-                    # may need to make this explicitly inhibitory in the future
-                    new_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
-                                                  dev.random.rand(n_total, n_total) > p_mask, is_cuda)
-                    self.population_connections[(network.name, other_network.name)] = new_cnxn
+        for group_name in self.output_pops:
+            for other_group_name in self.output_pops:
+                if group_name != other_group_name:
+                    pre_group = self.firing_populations[group_name]
+                    post_group = self.firing_populations[other_group_name]
+                    self.population_connections[(group_name, other_group_name)] = InhibitoryConnection(
+                        pre_group, post_group, w_inh, False
+                    )
 
         self.input_pops = set()
         # add input network information
         for i, input_network in enumerate(in_networks_0):
             self.add_population(input_network, f'input_{i}_0')
-            in_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
-                                         dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            in_cnxn = ExcitatoryConnection(
+                input_network, hidden_group, w_max, w_min, False
+            )
             self.population_connections[(f'input_{i}_0', 'hidden_pop')] = in_cnxn
             self.input_pops.add(f'input_{i}_0')
 
         for i, input_network in enumerate(in_networks_1):
             self.add_population(input_network, f'input_{i}_1')
-            in_cnxn = SynapticConnection(abs(dev.random.randn(n_total, n_total)),
-                                         dev.random.rand(n_total, n_total) > p_mask, is_cuda)
+            in_cnxn = ExcitatoryConnection(
+                input_network, hidden_group, w_max, w_min, False
+            )
             self.population_connections[(f'input_{i}_1', 'hidden_pop')] = in_cnxn
             self.input_pops.add(f'input_{i}_1')
 
@@ -242,73 +319,11 @@ class BoolNet(IzhNet):
 
         self.step(**pop_inputs)
 
-    def tune_quiescent_rate(
+    def tune_to_rate(
             self,
             target_rate: float,
             populations_to_monitor: set[str],
-            steps_checked: int = 1000,  # Check on full second
-            max_iters: int = 20,
-            tolerance: float = 1e-3
-    ):
-        """
-        Adjust self.quiescent_rate so that the average firing ratio across
-        'populations_to_monitor' approaches 'target_rate'.
-
-        :param target_rate: Desired firing ratio, e.g. 0.15 for 15% firing
-        :param populations_to_monitor: List of population names whose firing rates we average
-        :param steps_checked: Number of simulation steps per tuning iteration
-        :param max_iters: Maximum number of iterations to attempt
-        :param lr: Learning rate for adjusting quiescent_rate
-        :param tolerance: Stop when |avg_rate - target_rate| < tolerance
-        """
-        low = 0.0
-        high = 1.0
-
-        for iteration in range(max_iters):
-            # Pick a midpoint quiescent_rate and set it
-            mid = (low + high) / 2.0
-            self.quiescent_rate = mid
-
-            ratios = []
-
-            # Run the network for a block of steps to measure the new firing ratio
-            # (Optionally reset or clear internal history or states if needed)
-            for _ in range(steps_checked):
-                # Example call – you might need to feed some default or "dummy" inputs
-                self.step(**{pop_name: self.quiescent_rate for pop_name in self.input_pops.union(self.teacher_pops)})
-                avg_rate = 0.0
-                for pop_name in populations_to_monitor:
-                    avg_rate += self.firing_populations[pop_name].firing_ratio()
-                avg_rate /= len(populations_to_monitor)
-                ratios.append(avg_rate)
-
-            average = sum(ratios)/len(ratios)
-            diff = average - target_rate
-            print(f"[Tune Quiescent] Iter={iteration}, q_rate={mid:.4f}, avg_rate={average:.4f}")
-
-            # Check if we've reached the target within tolerance
-            if abs(diff) < tolerance:
-                print(f"[Tune Quiescent] Converged: avg_rate={average:.4f}, target={target_rate:.4f}")
-                break
-
-            # Adjust bounds
-            if average < target_rate:
-                # If rate too low, raise the lower bound
-                low = mid
-            else:
-                # If rate too high, lower the upper bound
-                high = mid
-
-            # If our search bounds become very tight, we can also stop
-            if (high - low) < 1e-6:
-                print("[Tune Quiescent] Bounds converged closely.")
-                break
-
-    def tune_active_rate(
-            self,
-            target_rate: float,
-            populations_to_monitor: set[str],
-            steps_checked: int = 1000,  # Check on full second
+            steps_checked: int = 5000,  # Check on full second
             max_iters: int = 20,
             tolerance: float = 1e-3
     ):
@@ -324,18 +339,21 @@ class BoolNet(IzhNet):
         """
         low = 0.0
         high = 1.0
+        rate = .5
+
+        assert(max_iters >= 1)
 
         for iteration in range(max_iters):
             # Pick midpoint for active_rate
             mid = (low + high) / 2.0
-            self.active_rate = mid
+            rate = mid
 
             ratios = []
 
             # Run the network for 'steps_checked' steps to measure new firing ratio
             for _ in range(steps_checked):
                 # Provide default/dummy inputs to the step function using active_rate
-                self.step(**{pop_name: self.active_rate for pop_name in self.input_pops.union(self.teacher_pops)})
+                self.step(**{pop_name: rate for pop_name in self.input_pops.union(self.teacher_pops)})
 
                 avg_rate = 0.0
                 for pop_name in populations_to_monitor:
@@ -367,7 +385,22 @@ class BoolNet(IzhNet):
                 print("[Tune Active] Bounds converged closely.")
                 break
 
-    # TODO: set firing rates
+            self.reset_groups()
+
+        return rate
+
+    def tune_quiescent_rate(self, target_rate: float, populations_to_monitor: set[str],
+                            steps_checked: int = 5000,  # Check on full second
+                            max_iters: int = 20, tolerance: float = 1e-3):
+
+        self.quiescent_rate = self.tune_to_rate(target_rate, populations_to_monitor, steps_checked, max_iters, tolerance)
+
+    def tune_active_rate(self, target_rate: float, populations_to_monitor: set[str],
+                         steps_checked: int = 5000,  # Check on full second
+                         max_iters: int = 20, tolerance: float = 1e-3):
+
+        self.active_rate = self.tune_to_rate(target_rate, populations_to_monitor, steps_checked, max_iters, tolerance)
+
 
     # TODO: burn-in period
 
@@ -377,7 +410,21 @@ class BoolNet(IzhNet):
 
 
 
+def brader_init(connection: SynapticConnection, w_high: float, w_low: float,
+                 w_inhibitory: float, p_connected_e: float, p_connected_i: float):
+    dev = cp if connection.device == 'cuda' else np
+    connection.connection[:, :] = 0.0
+    excitatory_cnxn = dev.random.rand(len(connection.group_2), len(connection.group_1)) > p_connected_e
+    excitatory_cnxn = dev.logical_and(excitatory_cnxn, dev.logical_not(connection.group_1.inhibitory))
+    inhibitory_cnxn = dev.random.rand(len(connection.group_2), len(connection.group_1)) > p_connected_e
+    inhibitory_cnxn = dev.logical_and(inhibitory_cnxn, connection.group_1.inhibitory)
+    connection.connection[excitatory_cnxn] = w_high
+    connection.connection[dev.logical_not(excitatory_cnxn)] = w_low
+    connection.connection[inhibitory_cnxn] = w_inhibitory
 
+
+def zero_init(connection: SynapticConnection):
+    connection.connection[:, :] = 0.0
 
 
 
