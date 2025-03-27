@@ -538,13 +538,13 @@ class IzhPopulation(NeuronPopulation):
         else:
             return self.fired
 
-    def reset(self):
+    def reset(self, voltage_range: float = 0.0):
         if self.device == 'cuda':
             dev = cp
         else:
             dev = np
         self.fired = dev.zeros_like(self.a).astype(bool)
-        self.v = dev.full_like(self.a, -65.0)  # starting voltage
+        self.v = dev.full_like(self.a, -65.0) - dev.random.rand(*self.v.shape) * voltage_range # starting voltage
         self.u = self.b * self.v
 
         # conductance variables

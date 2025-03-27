@@ -7,12 +7,17 @@ GenArray = Union[cp.ndarray, np.ndarray]  # used repeatedly throughout code
 
 
 class SynapticConnection:
-    def __init__(self, connection_weights: GenArray, mask: GenArray, is_cuda: bool, can_update: bool = True):
+    def __init__(self, connection_weights: GenArray, presynaptic_group: nu.NeuronPopulation,
+                 postsynaptic_group: nu.NeuronPopulation, mask: GenArray, is_cuda: bool, can_update: bool = True):
         assert connection_weights.shape == mask.shape
+        assert connection_weights.shape[1] == len(presynaptic_group)
+        assert connection_weights.shape[0] == len(postsynaptic_group)
         if is_cuda:
             self.device = "cuda"
         else:
             self.device = "cpu"
+        self.presynaptic_group = presynaptic_group
+        self.postsynaptic_group = postsynaptic_group
         self.connection = connection_weights
         self.mask = mask
         self.can_update = can_update
@@ -49,7 +54,7 @@ class InhibitoryConnection(SynapticConnection):
             connections = dev.full_like(mask, w_inhibitory) * mask
         else:
             connections = dev.random.uniform(low=0, high=w_inhibitory, size=(len(group_2), len(group_1))) * mask
-        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+        super().__init__(connections, group_1, group_2, mask, group_1.device == 'cuda', can_update)
 
 
 class ExcitatoryConnection(SynapticConnection):
@@ -65,7 +70,7 @@ class ExcitatoryConnection(SynapticConnection):
             connections[dev.logical_not(connection_is_high)] = w_low
         else:
             connections = dev.random.uniform(low=w_low, high=w_high, size=(len(group_2), len(group_1)))
-        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+        super().__init__(connections, group_1, group_2, mask, group_1.device == 'cuda', can_update)
 
 
 class SimpleConnection(SynapticConnection):
@@ -83,7 +88,7 @@ class SimpleConnection(SynapticConnection):
             connections[:, connection_is_inhibitory] = w_inhibitory
         else:
             connections = dev.random.uniform(low=w_low, high=w_high, size=(len(group_2), len(group_1)))
-        super().__init__(connections, mask, group_1.device == 'cuda', can_update)
+        super().__init__(connections, group_1, group_2, mask, group_1.device == 'cuda', can_update)
 
 
 

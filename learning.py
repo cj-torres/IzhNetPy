@@ -131,7 +131,7 @@ class BraderSTDP(LearningMechanism):
 
         self.population_cs = {}
 
-    def update_weights(self):
+    def update_weights(self, update_inibitory: bool = False):
         if self.network.device == 'cuda':
             dev = cp
         else:
@@ -176,7 +176,8 @@ class BraderSTDP(LearningMechanism):
                 pos_weights = self.connection_xs[pops] > self.theta_x
                 self.network.population_connections[pops][pos_weights] = self.j_pos
                 self.network.population_connections[pops][dev.logical_not(pos_weights)] = self.j_neg
-                self.network.population_connections[pops][:, self.network.firing_populations[pre_pop].inhibitory] = self.j_inh
+                if update_inibitory:
+                    self.network.population_connections[pops][:, self.network.firing_populations[pre_pop].inhibitory] = self.j_inh
                 self.network.population_connections[pops][self.network.population_connections[pops].mask] = 0
 
                 # update c variable
