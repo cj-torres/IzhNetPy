@@ -1,3 +1,20 @@
+"""
+This module provides classes for creating and simulating Izhikevich neuron populations.
+
+The module is organized into two main types of classes:
+1. Parameter classes (IzhParams, InputParams and their subclasses) - These define parameters
+   for different types of neuron populations. They are used to make initialization of common
+   population types easier.
+2. Population classes (NeuronPopulation and subclasses) - These implement the actual neuron
+   populations that can be used in networks.
+
+There are two main types of populations:
+- Regular populations (IzhPopulation) - These use full Izhikevich parameters and implement
+  the complete Izhikevich neuron model.
+- Input populations (InputPopulation) - These are simpler and don't need full Izhikevich
+  parameters, but still take parameters which model facilitatory variables.
+"""
+
 import numpy as np
 import cupy as cp
 from typing import Union, Optional
@@ -13,7 +30,21 @@ DEFAULT_TAU_D = 150
 
 class IzhParams:
     """
-    Parameters for Izhikevich networks
+    Parameters for Izhikevich neuron populations.
+
+    This class defines the parameters needed for the Izhikevich neuron model, which is a simplified
+    model that can reproduce various firing patterns observed in real neurons. The parameters are:
+
+    - a: Time scale of the recovery variable u
+    - b: Sensitivity of the recovery variable u to the membrane potential v
+    - c: After-spike reset value of the membrane potential v
+    - d: After-spike reset increment of the recovery variable u
+    - inhibitory: Boolean indicating whether the neuron is inhibitory
+    - U, F, D: Parameters for the short-term plasticity model (facilitation and depression)
+
+    This class is used as input to IzhPopulation to create populations of neurons with specific
+    firing characteristics. Subclasses of IzhParams define specific neuron types with preset
+    parameter values.
     """
     def __init__(self, a: GenArray, b: GenArray, c: GenArray, d: GenArray, inhibitory: GenArray,
                  U: GenArray, F: GenArray, D: GenArray):
@@ -210,9 +241,20 @@ class SimpleInhibitoryParams(IzhParams):
 
 
 class InputParams:
-    '''
-    A class for Poisson input groups
-    '''
+    """
+    Parameters for input neuron populations.
+
+    This class defines a simplified set of parameters for input populations that don't need
+    the full Izhikevich neuron model. Input populations are used to provide external input
+    to a network, often with stochastic firing patterns (like Poisson processes).
+
+    The parameters are:
+    - inhibitory: Boolean indicating whether the input is inhibitory
+    - U, F, D: Parameters for the short-term plasticity model (facilitation and depression)
+
+    This class is used as input to InputPopulation to create populations of input neurons.
+    Subclasses define specific input types with preset parameter values.
+    """
     def __init__(self,  inhibitory: GenArray, U: GenArray, F: GenArray, D: GenArray):
         self.U = U
         self.F = F
@@ -264,6 +306,18 @@ class SimpleInhibitoryInputParams(InputParams):
 
 
 class NeuronPopulation:
+    """
+    Base class for all neuron populations.
+
+    This abstract class defines the common interface and functionality for all types of neuron
+    populations in the network. Subclasses implement specific types of populations, such as:
+    - IzhPopulation: Full Izhikevich neuron populations
+    - InputPopulation: Simplified input populations
+    - GaussianPopulation: Populations that output Gaussian noise
+
+    All populations can be run on either CPU (using NumPy) or GPU (using CuPy), and they
+    can be either regular populations or input populations.
+    """
     def __init__(self, is_cuda: bool, is_input: bool):
         if is_cuda:
             self.device = 'cuda'
@@ -315,6 +369,16 @@ class NeuronPopulation:
 
 
 class GaussianPopulation(NeuronPopulation):
+    """
+    A population that outputs Gaussian noise.
+
+    This is a simple input population that generates output values from a Gaussian (normal)
+    distribution with specified mean and standard deviation. It's useful for providing
+    random input to a network with a specific distribution.
+
+    Unlike other populations, this one doesn't implement the Izhikevich model or use
+    facilitatory variables. It simply outputs random values on each step.
+    """
     def __init__(self, mean: GenArray, std: GenArray, is_cuda: bool):
         if is_cuda:
             self.device = 'cuda'
@@ -341,6 +405,19 @@ class GaussianPopulation(NeuronPopulation):
 
 
 class InputPopulation(NeuronPopulation):
+    """
+    A population that provides input to a network.
+
+    This class implements a simplified neuron population that doesn't use the full Izhikevich
+    model, but still models facilitatory variables (U, F, D) for short-term plasticity. It's
+    used to provide external input to a network, typically with stochastic firing patterns.
+
+    Unlike IzhPopulation, this class doesn't have membrane potential dynamics. Instead, neurons
+    fire randomly based on a specified firing rate. However, the output can still be modulated
+    by facilitatory variables if the population is conductive.
+
+    This class takes InputParams as input to initialize the population parameters.
+    """
     def __init__(self, params: InputParams, conductive: bool):
         if type(params.U) == cp.ndarray:
             dev = cp
@@ -373,7 +450,17 @@ class InputPopulation(NeuronPopulation):
 
     def facilitation_update(self):
         """
-        :return:
+        Update the facilitation variables for short-term synaptic plasticity in input neurons.
+
+        This method implements the dynamics of short-term synaptic plasticity for input
+        populations, which includes both facilitation and depression. The model is based on
+        the Tsodyks-Markram model, where:
+        - R represents the fraction of available synaptic resources (depression)
+        - w represents the synaptic efficacy (facilitation)
+
+        The variables are updated based on the firing state of the input neurons and
+        the parameters U (baseline release probability), F (facilitation time constant),
+        and D (depression time constant).
         """
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
@@ -404,6 +491,16 @@ class InputPopulation(NeuronPopulation):
 
 
 class SimpleInput(InputPopulation):
+    """
+    A simple input population with both excitatory and inhibitory neurons.
+
+    This class provides a convenient way to create an input population with a specified
+    number of excitatory and inhibitory neurons. It combines SimpleExcitatoryInputParams
+    and SimpleInhibitoryInputParams to create a mixed population.
+
+    This is a common pattern in neural networks, where inputs can have both excitatory
+    and inhibitory effects on the target neurons.
+    """
     def __init__(self, n_excitatory: int, n_inhibitory: int, is_cuda: bool, is_conductive: bool):
         input_params = (SimpleExcitatoryInputParams(n_excitatory, is_cuda) +
                         SimpleInhibitoryInputParams(n_inhibitory, is_cuda))
@@ -411,6 +508,30 @@ class SimpleInput(InputPopulation):
 
 
 class IzhPopulation(NeuronPopulation):
+    """
+    A population of Izhikevich neurons.
+
+    This class implements the full Izhikevich neuron model, which can reproduce various
+    firing patterns observed in real neurons. It models the membrane potential dynamics
+    using the Izhikevich equations, and can also include conductance-based synapses and
+    short-term plasticity (facilitation and depression).
+
+    The Izhikevich model is defined by the following equations:
+    v' = 0.04v² + 5v + 140 - u + I
+    u' = a(bv - u)
+
+    If v ≥ 30 mV, then v ← c, u ← u + d
+
+    Where:
+    - v is the membrane potential
+    - u is a recovery variable
+    - a, b, c, d are parameters that determine the firing pattern
+    - I is the input current
+
+    This class takes IzhParams as input to initialize the population parameters.
+    Different subclasses of IzhParams can be used to create populations with different
+    firing characteristics (e.g., regular spiking, fast spiking, bursting).
+    """
     def __init__(self, params: IzhParams, conductive: bool,
                  tau_a: float = DEFAULT_TAU_A, tau_b: float = DEFAULT_TAU_B,
                  tau_c: float = DEFAULT_TAU_C, tau_d: float = DEFAULT_TAU_D):
@@ -507,7 +628,15 @@ class IzhPopulation(NeuronPopulation):
 
     def synaptic_current(self):
         """
-        :return:
+        Calculate the synaptic current based on conductance variables.
+
+        This method implements a conductance-based model of synaptic transmission,
+        where the current depends on the membrane potential and conductance variables.
+        The model includes four types of conductance (g_a, g_b, g_c, g_d) that can
+        represent different types of synaptic receptors (e.g., AMPA, NMDA, GABA_A, GABA_B).
+
+        Returns:
+            The total synaptic current to be added to the membrane potential equation.
         """
         a_term = self.g_a * self.v
         b_term = self.g_b * (((self.v + 80) / 60) ** 2) / (1 + (((self.v + 80) / 60) ** 2)) * self.v
@@ -517,7 +646,18 @@ class IzhPopulation(NeuronPopulation):
 
     def conductance_update(self, excitatory_input: GenArray, inhibitory_input: GenArray):
         """
-        :return:
+        Update the conductance variables based on excitatory and inhibitory inputs.
+
+        This method implements the dynamics of synaptic conductances, which decay
+        exponentially with time constants tau_a, tau_b, tau_c, tau_d, and are
+        increased by excitatory and inhibitory inputs.
+
+        The conductance variables g_a and g_b are associated with excitatory inputs,
+        while g_c and g_d are associated with inhibitory inputs.
+
+        Args:
+            excitatory_input: Input from excitatory presynaptic neurons
+            inhibitory_input: Input from inhibitory presynaptic neurons
         """
         #breakpoint()
         self.g_a = self.g_a + excitatory_input - self.g_a / self.tau_a
@@ -527,7 +667,17 @@ class IzhPopulation(NeuronPopulation):
 
     def facilitation_update(self):
         """
-        :return:
+        Update the facilitation variables for short-term synaptic plasticity.
+
+        This method implements the dynamics of short-term synaptic plasticity,
+        which includes both facilitation and depression. The model is based on
+        the Tsodyks-Markram model, where:
+        - R represents the fraction of available synaptic resources (depression)
+        - w represents the synaptic efficacy (facilitation)
+
+        The variables are updated based on the firing state of the neurons and
+        the parameters U (baseline release probability), F (facilitation time constant),
+        and D (depression time constant).
         """
         self.R = self.R + (1-self.R)/self.D - self.R * self.w * self.fired
         self.w = self.w + (self.U - self.w)/self.F + self.U * (1-self.w) * self.fired
